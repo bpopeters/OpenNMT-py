@@ -25,7 +25,7 @@ if can_use_sru:
 __all__ = [GlobalAttention, ImageEncoder, CopyGenerator, MultiHeadedAttention,
            LayerNorm, Bottle, BottleLinear, BottleLayerNorm, BottleSoftmax,
            TransformerEncoder, TransformerDecoder, Embeddings, Elementwise,
-           CopyCriterion, MatrixTree, WeightNormConv2d, ConvMultiStepAttention,
+           MatrixTree, WeightNormConv2d, ConvMultiStepAttention,
            CNNEncoder, CNNDecoder, StackedLSTM, StackedGRU, ContextGateFactory,
            Encoder, Decoder]
 
