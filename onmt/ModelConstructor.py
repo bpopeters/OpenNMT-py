@@ -8,10 +8,10 @@ import onmt
 import onmt.Models
 import onmt.modules
 from onmt.IO import ONMTDataset
-from onmt.Models import NMTModel, StdRNNDecoder, InputFeedRNNDecoder
+from onmt.Models import NMTModel
 from onmt.modules import Embeddings, ImageEncoder, CopyGenerator, \
                          TransformerDecoder, \
-                         CNNDecoder, Encoder
+                         CNNDecoder, Encoder, Decoder
 
 
 def make_embeddings(opt, word_dict, feature_dicts, for_encoder=True):
@@ -66,6 +66,7 @@ def make_decoder(opt, embeddings):
         opt: the option in current environment.
         embeddings (Embeddings): vocab embeddings for this decoder.
     """
+    '''
     if opt.decoder_type == "transformer":
         return TransformerDecoder(opt.dec_layers, opt.rnn_size,
                                   opt.global_attention, opt.copy_attn,
@@ -93,6 +94,17 @@ def make_decoder(opt, embeddings):
                              opt.copy_attn,
                              opt.dropout,
                              embeddings)
+    '''
+    """
+    self, decoder_type, rnn_type, num_layers, rnn_size, global_attn,
+        coverage_attn, copy_attn, input_feed, context_gate, dropout,
+        embeddings, cnn_kernel_width
+    """
+    return Decoder(
+        opt.decoder_type, opt.rnn_type, opt.dec_layers, opt.rnn_size,
+        opt.global_attention, opt.coverage_attn, opt.copy_attn,
+        opt.input_feed, opt.context_gate, opt.dropout, embeddings,
+        opt.cnn_kernel_width)
 
 
 def make_base_model(model_opt, fields, gpu, checkpoint=None):
