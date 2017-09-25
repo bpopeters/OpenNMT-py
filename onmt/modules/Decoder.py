@@ -287,6 +287,244 @@ class InputFeedRNNDecoder(RNNDecoderBase):
         return self.embeddings.embedding_size + self.hidden_size
 
 
+class InputFeedRNNDecoderLayers(nn.Module):
+    """
+    The recurrent layers of a Decoder that uses input feeding.
+    """
+    def __init__(self, rnn_type, embedding_dim, rnn_size,
+                 num_layers, attn_type, dropout):
+        assert rnn_type in ['LSTM', 'GRU']
+        super(InputFeedRNNDecoderLayers, self).__init__()
+        self.rnn = None  # gotta make this thing
+        # I think the input size will also be different...
+        '''
+        self.rnn = getattr(nn, rnn_type)(
+            input_size=embedding_dim,
+            hidden_size=rnn_size,
+            num_layers=num_layers,
+            dropout=dropout)
+        '''
+        # todo: this does not use the coverage option
+        self.attn = onmt.modules.GlobalAttention(
+            rnn_size, attn_type=attn_type)
+        self.dropout = nn.Dropout(p=dropout)
+
+    def forward(self, emb, context, state, **kwargs):
+        """
+        
+        """
+        output = state.input_feed.squeeze(0)
+        hidden = state.hidden
+        # coverage = state.coverage.squeeze(0) \
+        #     if state.coverage is not None else None
+
+        # Input feed concatenates hidden state with
+        # input at every time step.
+        for emb_t in emb.split(1):
+            emb_t = emb_t.squeeze(0)
+            emb_t = torch.cat([emb_t, output], 1)
+
+            rnn_output, hidden = self.rnn(emb_t, hidden)
+            attn_output, attn = self.attn(
+                rnn_output, context.transpose(0, 1))
+            '''
+            if self.context_gate is not None:
+                output = self.context_gate(
+                    emb_t, rnn_output, attn_output
+                )
+                output = self.dropout(output)
+            else:
+            '''
+            output = self.dropout(attn_output)
+            outputs += [output]
+            attns["std"] += [attn]
+
+            '''
+            # Update the coverage attention.
+            if self._coverage:
+                coverage = coverage + attn \
+                    if coverage is not None else attn
+                attns["coverage"] += [coverage]
+
+            # Run the forward pass of the copy attention layer.
+            if self._copy:
+                _, copy_attn = self.copy_attn(output,
+                                              context.transpose(0, 1))
+                attns["copy"] += [copy_attn]
+            '''
+
+        # does doing the stte like this still work?
+        state.update_state(hidden, outputs[-1].unsqueeze(0), None)
+        return outputs, state, attns
+
+
+class RNNDecoderLayers(nn.Module):
+    """
+    The recurrent layers of a Decoder. This one doesn't do input feeding,
+    at least not yet.
+    """
+    def __init__(self, rnn_type, embedding_dim, rnn_size,
+                 num_layers, attn_type, dropout):
+        assert rnn_type in ['LSTM', 'GRU']
+        super(RNNDecoderLayers, self).__init__()
+        self.rnn = getattr(nn, rnn_type)(
+            input_size=embedding_dim,
+            hidden_size=rnn_size,
+            num_layers=num_layers,
+            dropout=dropout)
+        # todo: this does not use the coverage option
+        self.attn = onmt.modules.GlobalAttention(
+            rnn_size, attn_type=attn_type)
+        self.dropout = nn.Dropout(p=dropout)
+
+    def forward(self, emb, context, state, **kwargs):
+        """
+        emb: tgt_len x batch x embedding_dim
+        context: src_len x batch x rnn_size
+        state: an RNNDecoderState object
+        """
+        assert isinstance(state, RNNDecoderState)
+        attns = dict()
+        rnn_output, hidden = self.rnn(emb, state.hidden)
+        attn_outputs, attn_scores = self.attn(
+            rnn_output.transpose(0, 1).contiguous(),
+            context.transpose(0, 1)
+        )
+        attns["std"] = attn_scores
+        outputs = self.dropout(attn_outputs)
+        # this thing is making the RNNDecoderState with the wrong args
+        state.update_state(hidden, outputs[-1].unsqueeze(0), None)
+        return outputs, state, attns
+
+
+class Decoder(nn.Module):
+    """
+    Decoder recurrent neural network. The decoder consists of three basic
+    parts: an embedding matrix for mapping input tokens to fixed-dimensional
+    vectors, a unit which processes these embedded tokens (an RNN with
+    attention, a transformer, or a convolutional network), and an
+    output layer (generally weight matrix + softmax) which generates a
+    probability distribution over the target vocabulary.
+    """
+
+    def __init__(
+        self, decoder_type, rnn_type, num_layers, rnn_size, global_attn,
+        coverage_attn, copy_attn, input_feed, context_gate, dropout,
+        embeddings, cnn_kernel_width):
+        # goal: obliterate attributes
+        '''
+        self.decoder_type = decoder_type
+        self.layers = num_layers
+        self._coverage = coverage_attn
+        self.hidden_size = rnn_size
+        input_size = embeddings.embedding_size
+        if self.input_feed:
+            input_size += rnn_size
+        '''
+        self.bidirectional_encoder = False  # total kludge
+
+        input_size = embeddings.embedding_size  # different if input_feed
+
+        super(Decoder, self).__init__()
+        self.embeddings = embeddings
+
+        # pad_id = embeddings.padding_idx
+        # possible decoders: a self-attentional transformer
+        #                    a stacked RNN
+
+        # standard RNN Decoder layers
+        # (the attention happens in here as well)
+        self.decoder = RNNDecoderLayers(
+            rnn_type, input_size, rnn_size,
+            num_layers, global_attn, dropout)
+
+        self.dropout = nn.Dropout(dropout)
+
+        # copy and coverage attention are not currently implemented.
+        # It's not immediately clear to me where they would go if they
+        # were.
+        
+        '''
+        if self.decoder_type == "transformer":
+            self.transformer = nn.ModuleList(
+                [onmt.modules.TransformerDecoder(self.hidden_size, opt, pad_id)
+                 for _ in range(opt.dec_layers)])
+        else:
+            if self.input_feed:
+                if opt.rnn_type == "LSTM":
+                    stackedCell = onmt.modules.StackedLSTM
+                else:
+                    stackedCell = onmt.modules.StackedGRU
+                self.rnn = stackedCell(opt.dec_layers, input_size,
+                                       opt.rnn_size, opt.dropout)
+            else:
+                self.rnn = getattr(nn, opt.rnn_type)(
+                     input_size, opt.rnn_size,
+                     num_layers=opt.dec_layers,
+                     dropout=opt.dropout
+                )
+            self.context_gate = None
+            if opt.context_gate is not None:
+                self.context_gate = ContextGateFactory(
+                    opt.context_gate, input_size,
+                    opt.rnn_size, opt.rnn_size,
+                    opt.rnn_size
+                )
+        '''
+
+    def forward(self, input, context, state, **kwargs):
+        """
+        Forward through the decoder.
+        Args:
+            input (LongTensor):  (len x batch x nfeats) -- Input tokens
+            src (LongTensor): not present anymore; what happened?
+            context:  (src_len x batch x rnn_size)  -- Memory bank
+            state: an object initializing the decoder.
+        Returns:
+            outputs: (len x batch x rnn_size)
+            final_states: an object of the same form as above
+            attns: Dictionary of (src_len x batch)
+        """
+        # CHECKS
+        tgt_len, n_batch, _ = input.size()
+        #s_len, n_batch_, _ = src.size()
+        context_len, context_batch, _ = context.size()
+        aeq(tgt_batch, context_batch)
+        # aeq(s_len, s_len_)
+        # END CHECKS
+        '''
+        if self.decoder_type == "transformer":
+            if state.previous_input:
+                input = torch.cat([state.previous_input, input], 0)
+        '''
+
+        emb = self.embeddings(input)
+        outputs, state, attns = self.decoder(emb, context, state)
+        return outputs, state, attns
+
+    def _fix_enc_hidden(self, h):
+        """
+        The encoder hidden is  (layers*directions) x batch x dim.
+        We need to convert it to layers x batch x (directions*dim).
+        """
+        # It makes a lot more sense for this to be part of the encoder
+        # (that would also make it easier to create new methods of
+        # brnn-merging
+        if self.bidirectional_encoder:
+            h = torch.cat([h[0:h.size(0):2], h[1:h.size(0):2]], 2)
+        return h
+
+    def init_decoder_state(self, src, context, enc_hidden):
+        # is the case labeling backwards here?
+        if isinstance(enc_hidden, tuple):  # GRU
+            return RNNDecoderState(context, self.decoder.rnn.hidden_size,
+                                   tuple([self._fix_enc_hidden(e_h)
+                                         for e_h in enc_hidden]))
+        else:  # LSTM
+            return RNNDecoderState(context, self.decoder.rnn.hidden_size,
+                                   self._fix_enc_hidden(enc_hidden))
+
+
 class DecoderState(object):
     """
     DecoderState is a base class for models, used during translation
