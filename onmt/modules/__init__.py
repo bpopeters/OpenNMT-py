@@ -13,6 +13,7 @@ from onmt.modules.StackedRNN import StackedLSTM, StackedGRU
 from onmt.modules.Embeddings import Embeddings
 from onmt.modules.WeightNorm import WeightNormConv2d
 from onmt.modules.Encoder import Encoder
+from onmt.modules.Encoder import Decoder
 
 from onmt.modules.SRU import check_sru_requirement
 can_use_sru = check_sru_requirement()
@@ -24,9 +25,9 @@ if can_use_sru:
 __all__ = [GlobalAttention, ImageEncoder, CopyGenerator, MultiHeadedAttention,
            LayerNorm, Bottle, BottleLinear, BottleLayerNorm, BottleSoftmax,
            TransformerEncoder, TransformerDecoder, Embeddings, Elementwise,
-           CopyCriterion, MatrixTree, WeightNormConv2d, ConvMultiStepAttention,
+           MatrixTree, WeightNormConv2d, ConvMultiStepAttention,
            CNNEncoder, CNNDecoder, StackedLSTM, StackedGRU, ContextGateFactory,
-           Encoder]
+           Encoder, Decoder]
 
 if can_use_sru:
     __all__.extend([SRU, check_sru_requirement])
