@@ -1,9 +1,19 @@
+import torch
 import torch.nn as nn
 import onmt
 import onmt.modules
 from onmt.Utils import aeq
 from torch.nn.utils.rnn import pad_packed_sequence as unpack
 from torch.nn.utils.rnn import pack_padded_sequence as pack
+
+
+def concat_merge(hidden):
+    """
+    The encoder hidden is  (layers*directions) x batch x dim.
+    We need to convert it to layers x batch x (directions*dim).
+    """
+    return torch.cat(
+        [hidden[0:hidden.size(0):2], hidden[1:hidden.size(0):2]], 2)
 
 
 class MeanEncoder(nn.Module):
@@ -54,6 +64,14 @@ class RNNEncoder(nn.Module):
         outputs, hidden_t = self.rnn(packed_emb, hidden)
         if lengths:
             outputs = unpack(outputs)[0]
+        if self.rnn.bidirectional:
+            if isinstance(hidden_t, tuple):
+                # LSTM case
+                hidden_t = tuple(concat_merge(h) for h in hidden_t)
+            else:
+                # GRU case
+                hidden_t = concat_merge(hidden_t)
+        # TODO: assertions about hidden state dimensions
         return hidden_t, outputs
 
 
