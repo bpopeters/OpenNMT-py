@@ -42,7 +42,6 @@ class NMTModel(nn.Module):
             )
         out, dec_state, attns = self.decoder(
             tgt=tgt,
-            src=src,
             context=context,
             state=dec_state
         )
