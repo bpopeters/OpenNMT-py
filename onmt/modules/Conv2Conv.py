@@ -42,8 +42,6 @@ class StackedCNN(nn.Module):
     def __init__(self, num_layers, input_size, cnn_kernel_width=3,
                  dropout=0.2):
         super(StackedCNN, self).__init__()
-        self.dropout = dropout
-        self.num_layers = num_layers
         self.layers = nn.ModuleList()
         for i in range(num_layers):
             self.layers.append(
@@ -58,9 +56,7 @@ class StackedCNN(nn.Module):
 
 class CNNEncoder(nn.Module):
     """
-    Encoder built on CNN.
-    self, embedding_dim, hidden_size, dropout,
-                 layers, kernel_width
+    Convolutional Encoder
     """
     def __init__(self, input_size, hidden_size, dropout,
                  num_layers, kernel_width):
@@ -71,8 +67,9 @@ class CNNEncoder(nn.Module):
                               kernel_width, dropout)
 
     def forward(self, emb, **kwargs):
-        s_len, batch, emb_dim = emb.size()
-
+        """
+        emb (FloatTensor): src_len x batch x emb_size
+        """
         emb = emb.transpose(0, 1).contiguous()
         emb_reshape = emb.view(emb.size(0) * emb.size(1), -1)
         emb_remap = self.linear(emb_reshape)
@@ -86,56 +83,37 @@ class CNNEncoder(nn.Module):
 
 class CNNDecoder(nn.Module):
     """
-    Decoder built on CNN, which consists of resduial convolutional layers,
+    Decoder built on CNN, which consists of residual convolutional layers,
     with ConvMultiStepAttention.
     """
-    def __init__(self, num_layers, hidden_size, attn_type,
-                 copy_attn, cnn_kernel_width, dropout, embeddings):
+    def __init__(self, num_layers, input_size, hidden_size, attn_type,
+                 copy_attn, cnn_kernel_width, dropout):
+        assert not copy_attn, "copy attention is not implemented yet"
+        self.cnn_kernel_width = cnn_kernel_width
         super(CNNDecoder, self).__init__()
 
-        # Basic attributes.
-        self.decoder_type = 'cnn'
-        self.num_layers = num_layers
-        self.hidden_size = hidden_size
-        self.cnn_kernel_width = cnn_kernel_width
-        self.embeddings = embeddings
-        self.dropout = dropout
-
         # Build the CNN.
-        input_size = self.embeddings.embedding_size
-        self.linear = nn.Linear(input_size, self.hidden_size)
-        self.conv_layers = nn.ModuleList()
-        for i in range(self.num_layers):
-            self.conv_layers.append(
-                GatedConv(self.hidden_size, self.cnn_kernel_width,
-                          self.dropout, True))
+        self.linear = nn.Linear(input_size, hidden_size)
+        self.conv_layers = nn.ModuleList(
+            [GatedConv(hidden_size, cnn_kernel_width, dropout, True)
+             for i in range(num_layers)]
+        )
 
-        self.attn_layers = nn.ModuleList()
-        for i in range(self.num_layers):
-            self.attn_layers.append(
-                onmt.modules.ConvMultiStepAttention(self.hidden_size))
+        self.attn_layers = nn.ModuleList(
+            [onmt.modules.ConvMultiStepAttention(hidden_size)
+             for i in range(num_layers)]
+        )
 
-        # CNNDecoder has its own attention mechanism.
-        # Set up a separated copy attention layer, if needed.
-        self._copy = False
-        if copy_attn:
-            self.copy_attn = onmt.modules.GlobalAttention(
-                hidden_size, attn_type=attn_type)
-            self._copy = True
-
-    def forward(self, input, context, state):
+    def forward(self, emb, tgt, context, state, **kwargs):
         """
-        Forward through the CNNDecoder.
         Args:
-            input (LongTensor): a sequence of input tokens tensors
-                                of size (len x batch x nfeats).
+            emb (FloatTensor): tgt_len x batch x emb_size
             context (FloatTensor): output(tensor sequence) from the encoder
                         CNN of size (src_len x batch x hidden_size).
             state (FloatTensor): hidden state from the encoder CNN for
                                  initializing the decoder.
         Returns:
-            outputs (FloatTensor): a Tensor sequence of output from the decoder
-                                   of shape (len x batch x hidden_size).
+            outputs (FloatTensor): tgt_len x batch x hidden_size
             state (FloatTensor): final hidden state from the decoder.
             attns (dict of (str, FloatTensor)): a dictionary of different
                                 type of attention Tensor from the decoder
@@ -143,23 +121,12 @@ class CNNDecoder(nn.Module):
         """
         # CHECKS
         assert isinstance(state, CNNDecoderState)
-        input_len, input_batch, _ = input.size()
-        contxt_len, contxt_batch, _ = context.size()
-        aeq(input_batch, contxt_batch)
+        input_len, input_batch, _ = emb.size()
+        context_len, context_batch, _ = context.size()
+        aeq(input_batch, context_batch)
         # END CHECKS
 
-        if state.previous_input is not None:
-            input = torch.cat([state.previous_input, input], 0)
-
-        # Initialize return variables.
-        outputs = []
         attns = {"std": []}
-        assert not self._copy, "Copy mechanism not yet tested in conv2conv"
-        if self._copy:
-            attns["copy"] = []
-
-        emb = self.embeddings(input)
-        assert emb.dim() == 3  # len x batch x embedding_dim
 
         tgt_emb = emb.transpose(0, 1).contiguous()
         # The output of CNNEncoder.
@@ -194,15 +161,13 @@ class CNNDecoder(nn.Module):
             attn = attn[:, state.previous_input.size(0):].squeeze()
             attn = torch.stack([attn])
         attns["std"] = attn
-        if self._copy:
-            attns["copy"] = attn
 
         # Update the state.
-        state.update_state(input)
+        state.update_state(tgt)
 
         return outputs, state, attns
 
-    def init_decoder_state(self, src, context, enc_hidden):
+    def init_decoder_state(self, context, enc_hidden, **kwargs):
         return CNNDecoderState(context, enc_hidden)
 
 
