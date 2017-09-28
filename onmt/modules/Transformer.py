@@ -8,7 +8,7 @@ from torch.autograd import Variable
 import numpy as np
 
 import onmt
-from onmt.Models import DecoderState
+from onmt.modules.Decoder import DecoderState
 from onmt.Utils import aeq
 
 
@@ -26,15 +26,17 @@ class PositionwiseFeedForward(nn.Module):
             droput(float): dropout probability(0-1.0).
         """
         super(PositionwiseFeedForward, self).__init__()
-        self.w_1 = onmt.modules.BottleLinear(size, hidden_size)
-        self.w_2 = onmt.modules.BottleLinear(hidden_size, size)
+        self.layers = nn.Sequential(
+            onmt.modules.BottleLinear(size, hidden_size),
+            nn.ReLU(),
+            onmt.modules.BottleLinear(hidden_size, size),
+            nn.Dropout(dropout)
+        )
         self.layer_norm = onmt.modules.BottleLayerNorm(size)
-        self.dropout = nn.Dropout(dropout)
-        self.relu = nn.ReLU()
 
     def forward(self, x):
         residual = x
-        output = self.dropout(self.w_2(self.relu(self.w_1(x))))
+        output = self.layers(x)
         return self.layer_norm(output + residual)
 
 
@@ -54,9 +56,8 @@ class TransformerEncoderLayer(nn.Module):
 
         self.self_attn = onmt.modules.MultiHeadedAttention(
             head_count, size, p=dropout)
-        self.feed_forward = PositionwiseFeedForward(size,
-                                                    hidden_size,
-                                                    dropout)
+        self.feed_forward = PositionwiseFeedForward(
+            size, hidden_size, dropout)
 
     def forward(self, input, mask):
         mid, _ = self.self_attn(input, input, input, mask=mask)
@@ -89,21 +90,18 @@ class TransformerEncoder(nn.Module):
         aeq(out_len, w_len)
         # END CHECKS
 
-        # Make mask.
         mask = words.data.eq(self.padding_idx).unsqueeze(1) \
             .expand(w_batch, w_len, w_len)
 
-        # Run the forward pass of every layer of the tranformer.
         for tf in self.transformer:
             out = tf(out, mask)
 
-        # I don't know how Variable(emb.data) varies from emb
+        # Is Variable(emb.data) different from emb?
         return Variable(emb.data), out.transpose(0, 1).contiguous()
 
 
 class TransformerDecoderLayer(nn.Module):
-    def __init__(self, size, dropout,
-                 head_count=8, hidden_size=2048):
+    def __init__(self, size, dropout, head_count=8, hidden_size=2048):
         """
         Args:
             size(int): the dimension of keys/values/queries in
@@ -118,9 +116,8 @@ class TransformerDecoderLayer(nn.Module):
                 head_count, size, p=dropout)
         self.context_attn = onmt.modules.MultiHeadedAttention(
                 head_count, size, p=dropout)
-        self.feed_forward = PositionwiseFeedForward(size,
-                                                    hidden_size,
-                                                    dropout)
+        self.feed_forward = PositionwiseFeedForward(
+            size, hidden_size, dropout)
         self.dropout = dropout
         mask = self._get_attn_subsequent_mask(MAX_SIZE)
         # Register self.mask as a buffer in TransformerDecoderLayer, so
@@ -128,17 +125,17 @@ class TransformerDecoderLayer(nn.Module):
         self.register_buffer('mask', mask)
 
     def forward(self, input, context, src_pad_mask, tgt_pad_mask):
-        # Args Checks
+        # CHECKS
         input_batch, input_len, _ = input.size()
-        contxt_batch, contxt_len, _ = context.size()
-        aeq(input_batch, contxt_batch)
+        context_batch, context_len, _ = context.size()
+        aeq(input_batch, context_batch)
 
         src_batch, t_len, s_len = src_pad_mask.size()
         tgt_batch, t_len_, t_len__ = tgt_pad_mask.size()
-        aeq(input_batch, contxt_batch, src_batch, tgt_batch)
+        aeq(input_batch, context_batch, src_batch, tgt_batch)
         aeq(t_len, t_len_, t_len__, input_len)
-        aeq(s_len, contxt_len)
-        # END Args Checks
+        aeq(s_len, context_len)
+        # END CHECKS
 
         dec_mask = torch.gt(tgt_pad_mask + self.mask[:, :tgt_pad_mask.size(1),
                             :tgt_pad_mask.size(1)]
@@ -151,11 +148,11 @@ class TransformerDecoderLayer(nn.Module):
         # CHECKS
         output_batch, output_len, _ = output.size()
         aeq(input_len, output_len)
-        aeq(contxt_batch, output_batch)
+        aeq(context_batch, output_batch)
 
         n_batch_, t_len_, s_len_ = attn.size()
         aeq(input_batch, n_batch_)
-        aeq(contxt_len, s_len_)
+        aeq(context_len, s_len_)
         aeq(input_len, t_len_)
         # END CHECKS
 
@@ -170,90 +167,64 @@ class TransformerDecoderLayer(nn.Module):
 
 
 class TransformerDecoder(nn.Module):
-    """
-    The Transformer decoder from "Attention is All You Need".
-    """
-    def __init__(self, num_layers, hidden_size, attn_type,
-                 copy_attn, dropout, embeddings):
+    """"""
+    def __init__(self, num_layers, hidden_size,
+                 attn_type, copy_attn, dropout):
         super(TransformerDecoder, self).__init__()
 
-        # Basic attributes.
-        self.decoder_type = 'transformer'
-        self.num_layers = num_layers
-        self.embeddings = embeddings
-
-        # Build TransformerDecoder.
         self.transformer_layers = nn.ModuleList(
             [TransformerDecoderLayer(hidden_size, dropout)
              for _ in range(num_layers)])
 
-        # TransformerDecoder has its own attention mechanism.
-        # Set up a separated copy attention layer, if needed.
-        self._copy = False
-        if copy_attn:
-            self.copy_attn = onmt.modules.GlobalAttention(
-                hidden_size, attn_type=attn_type)
-            self._copy = True
+        assert not copy_attn, "copy attention is not implemented yet"
 
-    def forward(self, input, context, state):
+    def forward(self, emb, tgt, context, state, padding_idx, **kwargs):
         """
-        Forward through the TransformerDecoder.
         Args:
-            input (LongTensor): a sequence of input tokens tensors
-                                of size (len x batch x nfeats).
+            emb (FloatTensor): tgt_len x batch x embedding_dim
+            tgt (LongTensor): tgt_len x batch x tgt_nfeat
             context (FloatTensor): output(tensor sequence) from the encoder
                                 of size (src_len x batch x hidden_size).
-            state (FloatTensor): hidden state from the encoder RNN for
-                                 initializing the decoder.
+            state (TransformerDecoderState): hidden state from the encoder
+                RNN for initializing the decoder.
+            padding_idx:
         Returns:
             outputs (FloatTensor): a Tensor sequence of output from the decoder
                                    of shape (len x batch x hidden_size).
-            state (FloatTensor): final hidden state from the decoder.
+            state (TransformerDecoderState):
+                                    final hidden state from the decoder.
             attns (dict of (str, FloatTensor)): a dictionary of different
                                 type of attention Tensor from the decoder
                                 of shape (src_len x batch).
         """
         # CHECKS
         assert isinstance(state, TransformerDecoderState)
-        input_len, input_batch, _ = input.size()
-        contxt_len, contxt_batch, _ = context.size()
-        aeq(input_batch, contxt_batch)
-
-        if state.previous_input is not None:
-            input = torch.cat([state.previous_input, input], 0)
+        input_len, input_batch, _ = emb.size()
+        context_len, context_batch, _ = context.size()
+        aeq(input_batch, context_batch)
 
         src = state.src
         src_words = src[:, :, 0].transpose(0, 1)
-        tgt_words = input[:, :, 0].transpose(0, 1)
+        tgt_words = tgt[:, :, 0].transpose(0, 1)
         src_batch, src_len = src_words.size()
         tgt_batch, tgt_len = tgt_words.size()
-        aeq(input_batch, contxt_batch, src_batch, tgt_batch)
-        aeq(contxt_len, src_len)
+        aeq(input_batch, context_batch, src_batch, tgt_batch)
+        aeq(context_len, src_len)
         # aeq(input_len, tgt_len)
         # END CHECKS
 
-        # Initialize return variables.
-        outputs = []
         attns = {"std": []}
-        if self._copy:
-            attns["copy"] = []
-
-        # Run the forward pass of the TransformerDecoder.
-        emb = self.embeddings(input)
-        assert emb.dim() == 3  # len x batch x embedding_dim
 
         output = emb.transpose(0, 1).contiguous()
         src_context = context.transpose(0, 1).contiguous()
 
-        padding_idx = self.embeddings.word_padding_idx
         src_pad_mask = src_words.data.eq(padding_idx).unsqueeze(1) \
             .expand(src_batch, tgt_len, src_len)
         tgt_pad_mask = tgt_words.data.eq(padding_idx).unsqueeze(1) \
             .expand(tgt_batch, tgt_len, tgt_len)
 
-        for i in range(self.num_layers):
-            output, attn \
-                = self.transformer_layers[i](output, src_context,
+        for transformer_layer in self.transformer_layers:
+            output, attn = transformer_layer(output, src_context,
                                              src_pad_mask, tgt_pad_mask)
 
         # Process the result and update the attentions.
@@ -261,17 +232,15 @@ class TransformerDecoder(nn.Module):
         if state.previous_input is not None:
             outputs = outputs[state.previous_input.size(0):]
             attn = attn[:, state.previous_input.size(0):].squeeze()
-            attn = torch.stack([attn])
+            attn = torch.stack([attn])  # what does this do?
         attns["std"] = attn
-        if self._copy:
-            attns["copy"] = attn
 
         # Update the state.
-        state.update_state(input)
+        state.update_state(tgt)
 
         return outputs, state, attns
 
-    def init_decoder_state(self, src, context, enc_hidden):
+    def init_decoder_state(self, src, **kwargs):
         return TransformerDecoderState(src)
 
 
