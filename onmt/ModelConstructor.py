@@ -10,8 +10,7 @@ import onmt.modules
 from onmt.IO import ONMTDataset
 from onmt.Models import NMTModel
 from onmt.modules import Embeddings, ImageEncoder, CopyGenerator, \
-                         TransformerDecoder, \
-                         CNNDecoder, Encoder, Decoder
+                         Encoder, Decoder
 
 
 def make_embeddings(opt, word_dict, feature_dicts, for_encoder=True):
@@ -50,10 +49,7 @@ def make_embeddings(opt, word_dict, feature_dicts, for_encoder=True):
 
 def make_encoder(opt, embeddings):
     """
-    Various encoder dispatcher function.
-    Args:
-        opt: the option in current environment.
-        embeddings (Embeddings): vocab embeddings for this encoder.
+    Unpack the relevant opt arguments and return an Encoder
     """
     return Encoder(opt.encoder_type, opt.brnn, opt.rnn_type, opt.enc_layers,
                    opt.rnn_size, opt.dropout, embeddings, opt.cnn_kernel_width)
@@ -61,44 +57,7 @@ def make_encoder(opt, embeddings):
 
 def make_decoder(opt, embeddings):
     """
-    Various decoder dispatcher function.
-    Args:
-        opt: the option in current environment.
-        embeddings (Embeddings): vocab embeddings for this decoder.
-    """
-    '''
-    if opt.decoder_type == "transformer":
-        return TransformerDecoder(opt.dec_layers, opt.rnn_size,
-                                  opt.global_attention, opt.copy_attn,
-                                  opt.dropout, embeddings)
-    elif opt.decoder_type == "cnn":
-        return CNNDecoder(opt.dec_layers, opt.rnn_size,
-                          opt.global_attention, opt.copy_attn,
-                          opt.cnn_kernel_width, opt.dropout,
-                          embeddings)
-    elif opt.input_feed:
-        return InputFeedRNNDecoder(opt.rnn_type, opt.brnn,
-                                   opt.dec_layers, opt.rnn_size,
-                                   opt.global_attention,
-                                   opt.coverage_attn,
-                                   opt.context_gate,
-                                   opt.copy_attn,
-                                   opt.dropout,
-                                   embeddings)
-    else:
-        return StdRNNDecoder(opt.rnn_type, opt.brnn,
-                             opt.dec_layers, opt.rnn_size,
-                             opt.global_attention,
-                             opt.coverage_attn,
-                             opt.context_gate,
-                             opt.copy_attn,
-                             opt.dropout,
-                             embeddings)
-    '''
-    """
-    self, decoder_type, rnn_type, num_layers, rnn_size, global_attn,
-        coverage_attn, copy_attn, input_feed, context_gate, dropout,
-        embeddings, cnn_kernel_width
+    Unpack the relevant opt arguments and return a Decoder
     """
     return Decoder(
         opt.decoder_type, opt.rnn_type, opt.dec_layers, opt.rnn_size,
@@ -142,7 +101,6 @@ def make_base_model(model_opt, fields, gpu, checkpoint=None):
                                      feature_dicts, for_encoder=False)
     decoder = make_decoder(model_opt, tgt_embeddings)
 
-    # Make NMTModel(= encoder + decoder).
     model = NMTModel(encoder, decoder)
 
     # Make Generator.
@@ -174,7 +132,6 @@ def make_base_model(model_opt, fields, gpu, checkpoint=None):
     # add the generator to the module (does this register the parameter?)
     model.generator = generator
 
-    # Make the whole model leverage GPU if indicated to do so.
     if gpu:
         model.cuda()
     else:
