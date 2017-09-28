@@ -34,10 +34,16 @@ class NMTModel(nn.Module):
         """
         tgt = tgt[:-1]  # exclude last target from inputs
         enc_hidden, context = self.encoder(src, lengths)
-        enc_state = self.decoder.init_decoder_state(
-            src=src, context=context, enc_hidden=enc_hidden
-        )
+        if dec_state is None:
+            dec_state = self.decoder.init_decoder_state(
+                src=src,
+                context=context,
+                enc_hidden=enc_hidden
+            )
         out, dec_state, attns = self.decoder(
-            tgt, context, enc_state if dec_state is None else dec_state
+            tgt=tgt,
+            src=src,
+            context=context,
+            state=dec_state
         )
         return out, attns, dec_state
