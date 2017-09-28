@@ -2,58 +2,61 @@ import torch
 import torch.nn as nn
 
 
-class StackedLSTM(nn.Module):
-    """
-    Our own implementation of stacked LSTM.
-    Needed for the decoder, because we do input feeding.
-    """
-    def __init__(self, num_layers, input_size, rnn_size, dropout):
-        super(StackedLSTM, self).__init__()
+class StackedRNN(nn.Module):
+    def __init__(self, rnn_type, num_layers, input_size, rnn_size, dropout):
+        assert rnn_type in ['LSTM', 'GRU']
+        cell = nn.LSTMCell if rnn_type == 'LSTM' else nn.GRUCell
+        self.hidden_size = rnn_size
+        super(StackedRNN, self).__init__()
         self.dropout = nn.Dropout(dropout)
-        self.num_layers = num_layers
         self.layers = nn.ModuleList()
 
         for i in range(num_layers):
-            self.layers.append(nn.LSTMCell(input_size, rnn_size))
+            self.layers.append(cell(input_size, rnn_size))
             input_size = rnn_size
 
     def forward(self, input, hidden):
-        h_0, c_0 = hidden
-        h_1, c_1 = [], []
+        """
+        input (FloatTensor):
+            batch x input_feed_input_size
+        hidden (tuple of FloatTensor):
+            each element is layers x batch x rnn_size
+        returns:
+            output (FloatTensor): batch x rnn_size
+            out_hidden: hidden state of same form as input hidden state
+        """
+        hidden_states = []
+        output = input
+
         for i, layer in enumerate(self.layers):
-            h_1_i, c_1_i = layer(input, (h_0[i], c_0[i]))
-            input = h_1_i
-            if i + 1 != self.num_layers:
-                input = self.dropout(input)
-            h_1 += [h_1_i]
-            c_1 += [c_1_i]
+            if isinstance(self, StackedLSTM):
+                hidden_i = tuple(h[i] for h in hidden)
+            else:
+                hidden_i = hidden[0][i]
+            h_1_i = layer(output, hidden_i)
+            if isinstance(self, StackedLSTM):
+                output = h_1_i[0]
+            else:
+                output = h_1_i
+            if i + 1 != len(self.layers):
+                output = self.dropout(output)
+            hidden_states.append(h_1_i)
 
-        h_1 = torch.stack(h_1)
-        c_1 = torch.stack(c_1)
+        if isinstance(self, StackedLSTM):
+            out_hidden = tuple(torch.stack(h) for h in zip(*hidden_states))
+        else:
+            out_hidden = (torch.stack(hidden_states),)
 
-        return input, (h_1, c_1)
+        return output, out_hidden
 
 
-class StackedGRU(nn.Module):
-
+class StackedLSTM(StackedRNN):
     def __init__(self, num_layers, input_size, rnn_size, dropout):
-        super(StackedGRU, self).__init__()
-        self.dropout = nn.Dropout(dropout)
-        self.num_layers = num_layers
-        self.layers = nn.ModuleList()
+        super(StackedLSTM, self).__init__(
+            'LSTM', num_layers, input_size, rnn_size, dropout)
 
-        for i in range(num_layers):
-            self.layers.append(nn.GRUCell(input_size, rnn_size))
-            input_size = rnn_size
 
-    def forward(self, input, hidden):
-        h_1 = []
-        for i, layer in enumerate(self.layers):
-            h_1_i = layer(input, hidden[0][i])
-            input = h_1_i
-            if i + 1 != self.num_layers:
-                input = self.dropout(input)
-            h_1 += [h_1_i]
-
-        h_1 = torch.stack(h_1)
-        return input, (h_1,)
+class StackedGRU(StackedRNN):
+    def __init__(self, num_layers, input_size, rnn_size, dropout):
+        super(StackedGRU, self).__init__(
+            'GRU', num_layers, input_size, rnn_size, dropout)
