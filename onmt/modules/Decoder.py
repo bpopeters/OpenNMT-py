@@ -4,6 +4,7 @@ import torch.nn as nn
 from torch.autograd import Variable
 
 import onmt
+from onmt.modules import TransformerDecoder, CNNDecoder
 from onmt.Utils import aeq
 
 
@@ -37,10 +38,9 @@ class InputFeedRNNDecoderLayers(nn.Module):
         # coverage = state.coverage.squeeze(0) \
         #     if state.coverage is not None else None
 
-        # Input feed concatenates hidden state with
-        # input at every time step.
         for emb_t in emb.split(1):
             emb_t = emb_t.squeeze(0)
+            # concatenate hidden state with input at every time step
             emb_t = torch.cat([emb_t, output], 1)
 
             rnn_output, hidden = self.rnn(emb_t, hidden)
@@ -75,15 +75,22 @@ class InputFeedRNNDecoderLayers(nn.Module):
         for k in attns:
             attns[k] = torch.stack(attns[k])
 
-        # does doing the state like this still work?
         state.update_state(hidden, outputs[-1].unsqueeze(0), None)
         return outputs, state, attns
+
+    def init_decoder_state(self, context, enc_hidden, **kwargs):
+        """
+        context (FloatTensor): src_len x batch x rnn_size
+        enc_hidden (FloatTensor or tuple thereof)
+        returns:
+            The initial RNNDecoderState
+        """
+        return RNNDecoderState(context, self.rnn.hidden_size, enc_hidden)
 
 
 class RNNDecoderLayers(nn.Module):
     """
-    The recurrent layers of a Decoder. This one doesn't do input feeding,
-    at least not yet.
+    The recurrent layers of a Decoder that does not do input feed
     """
     def __init__(self, rnn_type, embedding_dim, rnn_size,
                  num_layers, attn_type, dropout):
@@ -114,29 +121,32 @@ class RNNDecoderLayers(nn.Module):
         )
         attns["std"] = attn_scores
         outputs = self.dropout(attn_outputs)
-        # it may make more sense to update the state after these layers
-        # because the code is the same if you have input feed
-        # (and it may be the same for non-RNN decoders as well)
         state.update_state(hidden, outputs[-1].unsqueeze(0), None)
         return outputs, state, attns
+
+    def init_decoder_state(self, context, enc_hidden, **kwargs):
+        """
+        context (FloatTensor): src_len x batch x rnn_size
+        enc_hidden (FloatTensor or tuple thereof)
+        returns:
+            The initial RNNDecoderState
+        """
+        return RNNDecoderState(context, self.rnn.hidden_size, enc_hidden)
 
 
 class Decoder(nn.Module):
     """
-    Decoder recurrent neural network. The decoder consists of three basic
+    Decoder neural network. The decoder consists of three basic
     parts: an embedding matrix for mapping input tokens to fixed-dimensional
     vectors, a layered unit which processes these embedded tokens (an RNN with
     attention, a transformer, or a convolutional network), and an
     output layer (generally weight matrix + softmax) which generates a
     probability distribution over the target vocabulary.
     """
-
     def __init__(
             self, decoder_type, rnn_type, num_layers, rnn_size, global_attn,
             coverage_attn, copy_attn, input_feed, context_gate, dropout,
             embeddings, cnn_kernel_width):
-        # goal: obliterate attributes
-        self.hidden_size = rnn_size
 
         # emb_size is the size of the input to the decoder layers unless
         # using a model with input feeding
@@ -148,64 +158,62 @@ class Decoder(nn.Module):
         # possible decoders: a self-attentional transformer, convolutional,
         #                    a stacked RNN, a normal RNN
         if decoder_type == "transformer":
-            # implement transformer
-            self.decoder = None
+            self.decoder = TransformerDecoder(
+                num_layers, rnn_size, global_attn, copy_attn, dropout)
         elif decoder_type == "cnn":
-            # implement CNN
-            self.decoder = None
+            self.decoder = CNNDecoder(
+                num_layers, rnn_size, emb_size, global_attn,
+                copy_attn, cnn_kernel_width, dropout)
         elif input_feed:
             self.decoder = InputFeedRNNDecoderLayers(
                 rnn_type, emb_size + rnn_size, rnn_size,
                 num_layers, global_attn, dropout)
         else:
-            # standard RNN Decoder layers
-            # (the attention happens in here as well)
             self.decoder = RNNDecoderLayers(
                 rnn_type, emb_size, rnn_size,
                 num_layers, global_attn, dropout)
 
         self.dropout = nn.Dropout(dropout)
 
-    def forward(self, input, context, state, **kwargs):
+    def forward(self, tgt, context, state, **kwargs):
         """
-        Forward through the decoder.
         Args:
-            input (LongTensor):  (len x batch x nfeats) -- Input tokens
-            src (LongTensor): not present anymore; what happened?
-            context:  (src_len x batch x rnn_size)  -- Memory bank
-            state: an object initializing the decoder.
+            tgt (LongTensor):  tgt_len x batch x tgt_nfeats
+            context (FloatTensor): src_len x batch x rnn_size
+            state (DecoderState)
         Returns:
             outputs: (len x batch x rnn_size)
             final_states: an object of the same form as above
             attns: Dictionary of (src_len x batch)
         """
         # CHECKS
-        tgt_len, tgt_batch, _ = input.size()
-        # s_len, n_batch_, _ = src.size()
+        tgt_len, tgt_batch, _ = tgt.size()
         context_len, context_batch, _ = context.size()
         aeq(tgt_batch, context_batch)
-        # aeq(s_len, s_len_)
         # END CHECKS
-        '''
-        # the self.decoder_type check can be replaced by isinstance
-        if self.decoder_type == "transformer":
+        if isinstance(self.decoder, onmt.modules.TransformerDecoder) or \
+                isinstance(self.decoder, onmt.modules.CNNDecoder):
             if state.previous_input:
-                input = torch.cat([state.previous_input, input], 0)
-        '''
+                tgt = torch.cat([state.previous_input, tgt], 0)
 
-        emb = self.embeddings(input)
-        outputs, state, attns = self.decoder(emb, context, state)
+        emb = self.embeddings(tgt)
+        outputs, state, attns = self.decoder(
+            emb=emb,
+            tgt=tgt,
+            context=context,
+            state=state,
+            padding_idx=self.embeddings.word_padding_idx)
         # todo: output layer stuff
         return outputs, state, attns
 
-    def init_decoder_state(self, src, context, enc_hidden):
+    def init_decoder_state(self, **kwargs):
         """
-        Description of arguments goes here
+        Dispatches to the init_decoder_state of this module's intermediate
+        layers. Different model types require different sorts of values
+        to initialize the decoder state. Therefore all arguments are passed
+        as keywords.
         """
-        # TODO: this is only applicable for RNN Decoders. This method
-        # should therefore go on the DecoderLayers thing. This method
-        # will just call self.decoder.init_decoder_state
-        return RNNDecoderState(context, self.hidden_size, enc_hidden)
+        return self.decoder.init_decoder_state(**kwargs)
 
 
 class DecoderState(object):
@@ -226,9 +234,9 @@ class DecoderState(object):
         """ Update when beam advances. """
         for e in self._all:
             a, br, d = e.size()
-            sentStates = e.view(a, beam_size, br // beam_size, d)[:, :, idx]
-            sentStates.data.copy_(
-                sentStates.data.index_select(1, positions))
+            sent_states = e.view(a, beam_size, br // beam_size, d)[:, :, idx]
+            sent_states.data.copy_(
+                sent_states.data.index_select(1, positions))
 
 
 class RNNDecoderState(DecoderState):
