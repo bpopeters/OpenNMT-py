@@ -4,7 +4,6 @@ import torch.nn as nn
 from torch.autograd import Variable
 
 import onmt
-from onmt.modules import TransformerDecoder, CNNDecoder
 from onmt.Utils import aeq
 
 
@@ -158,10 +157,10 @@ class Decoder(nn.Module):
         # possible decoders: a self-attentional transformer, convolutional,
         #                    a stacked RNN, a normal RNN
         if decoder_type == "transformer":
-            self.decoder = TransformerDecoder(
+            self.decoder = onmt.modules.TransformerDecoder(
                 num_layers, rnn_size, global_attn, copy_attn, dropout)
         elif decoder_type == "cnn":
-            self.decoder = CNNDecoder(
+            self.decoder = onmt.modules.CNNDecoder(
                 num_layers, rnn_size, emb_size, global_attn,
                 copy_attn, cnn_kernel_width, dropout)
         elif input_feed:
