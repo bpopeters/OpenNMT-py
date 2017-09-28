@@ -9,7 +9,7 @@ from torch.autograd import Variable
 
 import onmt.modules
 from onmt.modules.WeightNorm import WeightNormConv2d
-from onmt.Models import DecoderState
+from onmt.modules.Decoder import DecoderState
 from onmt.Utils import aeq
 
 
