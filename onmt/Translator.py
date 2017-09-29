@@ -96,7 +96,9 @@ class Translator(object):
         src = onmt.IO.make_features(batch, 'src')
         encStates, context = self.model.encoder(src, src_lengths)
         decStates = self.model.decoder.init_decoder_state(
-                                        src, context, encStates)
+                                        src=src,
+                                        context=context,
+                                        enc_hidden=encStates)
 
         #  (1b) Initialize for the decoder.
         def var(a): return Variable(a, volatile=True)
@@ -114,7 +116,7 @@ class Translator(object):
                           cuda=self.opt.cuda,
                           vocab=self.fields["tgt"].vocab,
                           global_scorer=scorer)
-                for __ in range(batch_size)]
+                for _ in range(batch_size)]
 
         # (2) run the decoder to generate sentences, using beam search.
 
