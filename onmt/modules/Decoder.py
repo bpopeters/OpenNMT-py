@@ -34,8 +34,6 @@ class InputFeedRNNDecoderLayers(nn.Module):
         attns = {"std": []}
         output = state.input_feed.squeeze(0)
         hidden = state.hidden
-        # coverage = state.coverage.squeeze(0) \
-        #     if state.coverage is not None else None
 
         for emb_t in emb.split(1):
             emb_t = emb_t.squeeze(0)
@@ -45,31 +43,9 @@ class InputFeedRNNDecoderLayers(nn.Module):
             rnn_output, hidden = self.rnn(emb_t, hidden)
             attn_output, attn = self.attn(
                 rnn_output, context.transpose(0, 1))
-            '''
-            if self.context_gate is not None:
-                output = self.context_gate(
-                    emb_t, rnn_output, attn_output
-                )
-                output = self.dropout(output)
-            else:
-            '''
             output = self.dropout(attn_output)
             outputs.append(output)
             attns["std"].append(attn)
-
-            '''
-            # Update the coverage attention.
-            if self._coverage:
-                coverage = coverage + attn \
-                    if coverage is not None else attn
-                attns["coverage"] += [coverage]
-
-            # Run the forward pass of the copy attention layer.
-            if self._copy:
-                _, copy_attn = self.copy_attn(output,
-                                              context.transpose(0, 1))
-                attns["copy"] += [copy_attn]
-            '''
         outputs = torch.stack(outputs)
         for k in attns:
             attns[k] = torch.stack(attns[k])
