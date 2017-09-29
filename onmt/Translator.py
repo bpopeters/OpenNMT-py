@@ -33,14 +33,14 @@ class Translator(object):
         # for debugging
         self.beam_accum = None
 
-    def initBeamAccum(self):
+    def init_beam_accum(self):
         self.beam_accum = {
             "predicted_ids": [],
             "beam_parent_ids": [],
             "scores": [],
             "log_probs": []}
 
-    def buildTargetTokens(self, pred, src, attn, copy_vocab):
+    def build_target_tokens(self, pred, src, attn, copy_vocab):
         vocab = self.fields["tgt"].vocab
         tokens = []
         for tok in pred:
@@ -59,7 +59,7 @@ class Translator(object):
                     tokens[i] = self.fields["src"].vocab.itos[src[maxIndex[0]]]
         return tokens
 
-    def _runTarget(self, batch, data):
+    def _run_target(self, batch, data):
 
         _, src_lengths = batch.src
         src = onmt.IO.make_features(batch, 'src')
@@ -87,7 +87,7 @@ class Translator(object):
             goldScores += scores
         return goldScores
 
-    def translateBatch(self, batch, dataset):
+    def translate_batch(self, batch, dataset):
         beam_size = self.opt.beam_size
         batch_size = batch.batch_size
 
@@ -172,7 +172,7 @@ class Translator(object):
                 decStates.beam_update(j, b.getCurrentOrigin(), beam_size)
 
         if "tgt" in batch.__dict__:
-            allGold = self._runTarget(batch, dataset)
+            allGold = self._run_target(batch, dataset)
         else:
             allGold = [0] * batch_size
 
@@ -197,7 +197,7 @@ class Translator(object):
         batch_size = batch.batch_size
 
         #  (2) translate
-        pred, predScore, attn, goldScore = self.translateBatch(batch, data)
+        pred, predScore, attn, goldScore = self.translate_batch(batch, data)
         assert(len(goldScore) == len(pred))
         pred, predScore, attn, goldScore, i = list(zip(
             *sorted(zip(pred, predScore, attn, goldScore,
@@ -213,11 +213,11 @@ class Translator(object):
         for b in range(batch_size):
             src_vocab = data.src_vocabs[inds[b]]
             predBatch.append(
-                [self.buildTargetTokens(pred[b][n], src[:, b],
-                                        attn[b][n], src_vocab)
+                [self.build_target_tokens(pred[b][n], src[:, b],
+                                          attn[b][n], src_vocab)
                  for n in range(self.opt.n_best)])
             if self.opt.tgt:
                 goldBatch.append(
-                    self.buildTargetTokens(tgt[1:, b], src[:, b],
-                                           None, None))
+                    self.build_target_tokens(tgt[1:, b], src[:, b],
+                                             None, None))
         return predBatch, goldBatch, predScore, goldScore, attn, src
