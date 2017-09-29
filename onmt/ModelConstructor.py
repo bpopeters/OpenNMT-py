@@ -2,15 +2,13 @@
 This file is for models creation, which consults options
 and creates each encoder and decoder accordingly.
 """
-import torch.nn as nn
-
 import onmt
 import onmt.Models
 import onmt.modules
 from onmt.IO import ONMTDataset
 from onmt.Models import NMTModel
 from onmt.modules import Embeddings, ImageEncoder, CopyGenerator, \
-                         Encoder, Decoder
+                         Encoder, Decoder, OutputLayer
 
 
 def make_embeddings(opt, word_dict, feature_dicts, for_encoder=True):
@@ -103,22 +101,19 @@ def make_base_model(model_opt, fields, gpu, checkpoint=None):
 
     model = NMTModel(encoder, decoder)
 
-    # Make Generator.
     if not model_opt.copy_attn:
-        generator = nn.Sequential(
-            nn.Linear(model_opt.rnn_size, len(fields["tgt"].vocab)),
-            nn.LogSoftmax())
-        if model_opt.share_decoder_embeddings:
-            generator[0].weight = decoder.embeddings.word_lut.weight
+        generator = OutputLayer(model_opt.rnn_size, len(fields["tgt"].vocab))
+        # TODO: handle share_decoder_embeddings case
     else:
         generator = CopyGenerator(model_opt, fields["src"].vocab,
                                   fields["tgt"].vocab)
+
+    model.generator = generator
 
     # Load the model states from checkpoint or initialize them.
     if checkpoint is not None:
         print('Loading model parameters.')
         model.load_state_dict(checkpoint['model'])
-        generator.load_state_dict(checkpoint['generator'])
     else:
         if model_opt.param_init != 0.0:
             print('Intializing parameters.')
@@ -128,9 +123,6 @@ def make_base_model(model_opt, fields, gpu, checkpoint=None):
                 model_opt.pre_word_vecs_enc, model_opt.fix_word_vecs_enc)
         model.decoder.embeddings.load_pretrained_vectors(
                 model_opt.pre_word_vecs_dec, model_opt.fix_word_vecs_dec)
-
-    # add the generator to the module (does this register the parameter?)
-    model.generator = generator
 
     if gpu:
         model.cuda()
