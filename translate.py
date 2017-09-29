@@ -70,7 +70,6 @@ def report_score(name, score_total, words_total):
 
 
 def get_src_words(src_indices, index2str):
-    words = []
     raw_words = (index2str[i] for i in src_indices)
     words = takewhile(lambda w: w != onmt.IO.PAD_WORD, raw_words)
     return " ".join(words)
@@ -92,7 +91,7 @@ def main():
     gold_score_total, gold_words_total = 0, 0
     if opt.dump_beam != "":
         import json
-        translator.initBeamAccum()
+        translator.init_beam_accum()
     data = onmt.IO.ONMTDataset(opt.src, opt.tgt, translator.fields, None)
 
     test_data = onmt.IO.OrderedIterator(
