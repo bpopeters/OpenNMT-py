@@ -25,18 +25,6 @@ class LossComputeBase(nn.Module):
         self.tgt_vocab = tgt_vocab
         self.padding_idx = tgt_vocab.stoi[onmt.IO.PAD_WORD]
 
-    def forward(self, batch, output, target, **kwargs):
-        """
-        Compute the loss. Subclass must define the compute_loss().
-        Args:
-            batch: the current batch.
-            output: the predict output from the model.
-            target: the validate target to compare output with.
-            **kwargs: additional info for computing loss.
-        """
-        # Need to simplify this interface.
-        return self.compute_loss(batch, output, target, **kwargs)
-
     def sharded_compute_loss(self, batch, output, attns,
                              cur_trunc, trunc_size, shard_size):
         """
@@ -48,7 +36,7 @@ class LossComputeBase(nn.Module):
                                    self.copy_attn)
 
         for shard in shards(gen_state, shard_size):
-            loss, stats = self.compute_loss(batch, **shard)
+            loss, stats = self(batch, **shard)
             loss.div(batch.batch_size).backward()
             batch_stats.update(stats)
 
@@ -88,8 +76,15 @@ class NMTLossCompute(LossComputeBase):
         weight[self.padding_idx] = 0
         self.criterion = nn.NLLLoss(weight, size_average=False)
 
-    def compute_loss(self, batch, output, target, **kwargs):
-        """ See base class for args description. """
+    def forward(self, batch, output, target, **kwargs):
+        """
+        Compute the loss.
+        Args:
+            batch: the current batch.
+            output: the predict output from the model.
+            target: the validate target to compare output with.
+            **kwargs: additional info for computing loss.
+        """
         scores = self.generator(self.bottle(output))
         scores_data = scores.data.clone()
 
