@@ -158,8 +158,7 @@ class Trainer(object):
                 # batch
                 reduce_counter += 1
                 if self.gpu_verbose_level > 0:
-                    logger.info("GpuRank %d: reduce_counter: %d \
-                                n_minibatch %d"
+                    logger.info("GpuRank %d: reduce_counter: %d n_minibatch %d"
                                 % (self.gpu_rank, reduce_counter, 1))
                 if self.n_gpu > 1:
                     normalization = sum(onmt.utils.distributed
@@ -184,8 +183,8 @@ class Trainer(object):
                     valid_iter = valid_iter_fct()
                     valid_stats = self.validate(valid_iter)
                     if self.gpu_verbose_level > 0:
-                        logger.info('GpuRank %d: gather valid stat \
-                                    step %d' % (self.gpu_rank, step))
+                        logger.info('GpuRank %d: gather valid stat step %d'
+                                    % (self.gpu_rank, step))
                     valid_stats = self._maybe_gather_stats(valid_stats)
                     if self.gpu_verbose_level > 0:
                         logger.info('GpuRank %d: report stat step %d'
@@ -195,9 +194,9 @@ class Trainer(object):
 
                 if self.gpu_rank == 0:
                     self._maybe_save(step)
+
                 step += 1
-                if step > train_steps:
-                    break
+
             if self.gpu_verbose_level > 0:
                 logger.info('GpuRank %d: we completed an epoch \
                             at step %d' % (self.gpu_rank, step))
