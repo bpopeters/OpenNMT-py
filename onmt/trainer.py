@@ -132,9 +132,8 @@ class Trainer(object):
         self._start_report_manager(start_time=total_stats.start_time)
 
         while step <= train_steps:
-
-            reduce_counter = 0  # this is updated only when you update params
-            for i, batch in enumerate(train_iter):
+            # reduce_counter = 0
+            for i, batch in enumerate(train_iter_fct()):
                 if self.n_gpu != 0 and i % self.n_gpu != self.gpu_rank:
                     continue
 
@@ -156,10 +155,12 @@ class Trainer(object):
                 # But there is a simpler way to accumulate gradients:
                 # just don't step the optimizer and zero the gradients on every
                 # batch
-                reduce_counter += 1
+                # reduce_counter += 1
+                """
                 if self.gpu_verbose_level > 0:
                     logger.info("GpuRank %d: reduce_counter: %d n_minibatch %d"
                                 % (self.gpu_rank, reduce_counter, 1))
+                """
                 if self.n_gpu > 1:
                     normalization = sum(onmt.utils.distributed
                                         .all_gather_list
@@ -198,9 +199,8 @@ class Trainer(object):
                     step += 1
 
             if self.gpu_verbose_level > 0:
-                logger.info('GpuRank %d: we completed an epoch \
-                            at step %d' % (self.gpu_rank, step))
-            train_iter = train_iter_fct()
+                logger.info('GpuRank %d: we completed an epoch at step %d'
+                            % (self.gpu_rank, step))
 
         return total_stats
 
