@@ -33,7 +33,7 @@ def build_trainer(opt, model, fields, optim, data_type, model_saver=None):
     valid_loss = onmt.utils.loss.build_loss_compute(
         model, fields["tgt"].vocab, opt, train=False)
 
-    trunc_size = opt.truncated_decoder  # Badly named...
+    trunc_size = opt.truncated_decoder
     shard_size = opt.max_generator_batches
     norm_method = opt.normalization
     grad_accum_count = opt.accum_count
@@ -125,9 +125,6 @@ class Trainer(object):
         logger.info('Start training...')
 
         step = self.optim._step + 1
-        true_batches = []
-        accum = 0
-        normalization = 0
         train_iter = train_iter_fct()
 
         total_stats = onmt.utils.Statistics()
@@ -136,72 +133,71 @@ class Trainer(object):
 
         while step <= train_steps:
 
-            reduce_counter = 0
+            reduce_counter = 0  # this is updated only when you update params
             for i, batch in enumerate(train_iter):
                 if self.n_gpu != 0 and i % self.n_gpu != self.gpu_rank:
                     continue
 
                 if self.gpu_verbose_level > 1:
-                    logger.info("GpuRank %d: index: %d accum: %d"
-                                % (self.gpu_rank, i, accum))
+                    logger.info("GpuRank %d: index: %d" % (self.gpu_rank, i))
                 cur_dataset = train_iter.get_cur_dataset()
                 self.train_loss.cur_dataset = cur_dataset
-
-                true_batches.append(batch)
 
                 if self.norm_method == "tokens":
                     num_tokens = batch.tgt[1:].ne(
                         self.train_loss.padding_idx).sum()
-                    normalization += num_tokens
+                    normalization = num_tokens
                 else:
-                    normalization += batch.batch_size
+                    normalization = batch.batch_size
 
-                accum += 1
-                if accum == self.grad_accum_count:
-                    reduce_counter += 1
+                # Previously, the batch training method (which was called
+                # _gradient_accumulation) was called less than once per batch
+                # if self.grad_accum_count > 1.
+                # But there is a simpler way to accumulate gradients:
+                # just don't step the optimizer and zero the gradients on every
+                # batch
+                reduce_counter += 1
+                if self.gpu_verbose_level > 0:
+                    logger.info("GpuRank %d: reduce_counter: %d \
+                                n_minibatch %d"
+                                % (self.gpu_rank, reduce_counter, 1))
+                if self.n_gpu > 1:
+                    normalization = sum(onmt.utils.distributed
+                                        .all_gather_list
+                                        (normalization))
+
+                self._train_batch(
+                    batch, normalization, total_stats, report_stats)
+                if (i + 1) % self.grad_accum_count == 0:
+                    self.optim.step()
+                    self.model.zero_grad()
+
+                report_stats = self._maybe_report_training(
+                    step, train_steps,
+                    self.optim.learning_rate,
+                    report_stats)
+
+                if step % valid_steps == 0:
                     if self.gpu_verbose_level > 0:
-                        logger.info("GpuRank %d: reduce_counter: %d \
-                                    n_minibatch %d"
-                                    % (self.gpu_rank, reduce_counter,
-                                       len(true_batches)))
-                    if self.n_gpu > 1:
-                        normalization = sum(onmt.utils.distributed
-                                            .all_gather_list
-                                            (normalization))
+                        logger.info('GpuRank %d: validate step %d'
+                                    % (self.gpu_rank, step))
+                    valid_iter = valid_iter_fct()
+                    valid_stats = self.validate(valid_iter)
+                    if self.gpu_verbose_level > 0:
+                        logger.info('GpuRank %d: gather valid stat \
+                                    step %d' % (self.gpu_rank, step))
+                    valid_stats = self._maybe_gather_stats(valid_stats)
+                    if self.gpu_verbose_level > 0:
+                        logger.info('GpuRank %d: report stat step %d'
+                                    % (self.gpu_rank, step))
+                    self._report_step(self.optim.learning_rate,
+                                      step, valid_stats=valid_stats)
 
-                    self._gradient_accumulation(
-                        true_batches, normalization, total_stats,
-                        report_stats)
-
-                    report_stats = self._maybe_report_training(
-                        step, train_steps,
-                        self.optim.learning_rate,
-                        report_stats)
-
-                    true_batches = []
-                    accum = 0
-                    normalization = 0
-                    if (step % valid_steps == 0):
-                        if self.gpu_verbose_level > 0:
-                            logger.info('GpuRank %d: validate step %d'
-                                        % (self.gpu_rank, step))
-                        valid_iter = valid_iter_fct()
-                        valid_stats = self.validate(valid_iter)
-                        if self.gpu_verbose_level > 0:
-                            logger.info('GpuRank %d: gather valid stat \
-                                        step %d' % (self.gpu_rank, step))
-                        valid_stats = self._maybe_gather_stats(valid_stats)
-                        if self.gpu_verbose_level > 0:
-                            logger.info('GpuRank %d: report stat step %d'
-                                        % (self.gpu_rank, step))
-                        self._report_step(self.optim.learning_rate,
-                                          step, valid_stats=valid_stats)
-
-                    if self.gpu_rank == 0:
-                        self._maybe_save(step)
-                    step += 1
-                    if step > train_steps:
-                        break
+                if self.gpu_rank == 0:
+                    self._maybe_save(step)
+                step += 1
+                if step > train_steps:
+                    break
             if self.gpu_verbose_level > 0:
                 logger.info('GpuRank %d: we completed an epoch \
                             at step %d' % (self.gpu_rank, step))
@@ -247,49 +243,38 @@ class Trainer(object):
 
         return stats
 
-    def _gradient_accumulation(self, true_batches, normalization, total_stats,
-                               report_stats):
-        if self.grad_accum_count > 1:
-            self.model.zero_grad()
+    def _train_batch(self, batch, normalization, total_stats, report_stats):
+        target_size = batch.tgt.size(0)
+        # Truncated BPTT
+        trunc_size = self.trunc_size if self.trunc_size else target_size
 
-        for batch in true_batches:
-            target_size = batch.tgt.size(0)
-            # Truncated BPTT
-            if self.trunc_size:
-                trunc_size = self.trunc_size
-            else:
-                trunc_size = target_size
+        dec_state = None
+        src = inputters.make_features(batch, 'src', self.data_type)
+        src_lengths = batch.src[1] if self.data_type == 'text' else None
+        if self.data_type == 'text':
+            report_stats.n_src_words += src_lengths.sum().item()
 
-            dec_state = None
-            src = inputters.make_features(batch, 'src', self.data_type)
-            if self.data_type == 'text':
-                _, src_lengths = batch.src
-                report_stats.n_src_words += src_lengths.sum().item()
-            else:
-                src_lengths = None
+        tgt_outer = inputters.make_features(batch, 'tgt')
 
-            tgt_outer = inputters.make_features(batch, 'tgt')
+        for j in range(0, target_size - 1, trunc_size):
+            # 1. Create truncated target.
+            tgt = tgt_outer[j: j + trunc_size]
 
-            for j in range(0, target_size-1, trunc_size):
-                # 1. Create truncated target.
-                tgt = tgt_outer[j: j + trunc_size]
+            # 2. F-prop all but generator.
+            # bpop: why was there zero_grad() on each truncation step?
+            outputs, attns, dec_state = \
+                self.model(src, tgt, src_lengths, dec_state)
 
-                # 2. F-prop all but generator.
-                if self.grad_accum_count == 1:
-                    self.model.zero_grad()
-                outputs, attns, dec_state = \
-                    self.model(src, tgt, src_lengths, dec_state)
+            # 3. Compute loss in shards for memory efficiency.
+            batch_stats = self.train_loss.sharded_compute_loss(
+                batch, outputs, attns, j,
+                trunc_size, self.shard_size, normalization)
+            total_stats.update(batch_stats)
+            report_stats.update(batch_stats)
 
-                # 3. Compute loss in shards for memory efficiency.
-                batch_stats = self.train_loss.sharded_compute_loss(
-                    batch, outputs, attns, j,
-                    trunc_size, self.shard_size, normalization)
-                total_stats.update(batch_stats)
-                report_stats.update(batch_stats)
-
-                # If truncated, don't backprop fully.
-                if dec_state is not None:
-                    dec_state.detach()
+            # If truncated, don't backprop fully.
+            if dec_state is not None:
+                dec_state.detach()
 
         # 3.bis Multi GPU gradient gather
         if self.n_gpu > 1:
@@ -298,9 +283,6 @@ class Trainer(object):
                      and p.grad is not None]
             onmt.utils.distributed.all_reduce_and_rescale_tensors(
                 grads, float(1))
-
-        # 4. Update the parameters and statistics.
-        self.optim.step()
 
     def _start_report_manager(self, start_time=None):
         """
