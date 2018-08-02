@@ -171,31 +171,31 @@ class Trainer(object):
                     self.optim.step()
                     self.model.zero_grad()
 
-                report_stats = self._maybe_report_training(
-                    step, train_steps,
-                    self.optim.learning_rate,
-                    report_stats)
+                    report_stats = self._maybe_report_training(
+                        step, train_steps,
+                        self.optim.learning_rate,
+                        report_stats)
 
-                if step % valid_steps == 0:
-                    if self.gpu_verbose_level > 0:
-                        logger.info('GpuRank %d: validate step %d'
-                                    % (self.gpu_rank, step))
-                    valid_iter = valid_iter_fct()
-                    valid_stats = self.validate(valid_iter)
-                    if self.gpu_verbose_level > 0:
-                        logger.info('GpuRank %d: gather valid stat step %d'
-                                    % (self.gpu_rank, step))
-                    valid_stats = self._maybe_gather_stats(valid_stats)
-                    if self.gpu_verbose_level > 0:
-                        logger.info('GpuRank %d: report stat step %d'
-                                    % (self.gpu_rank, step))
-                    self._report_step(self.optim.learning_rate,
-                                      step, valid_stats=valid_stats)
+                    if step % valid_steps == 0:
+                        if self.gpu_verbose_level > 0:
+                            logger.info('GpuRank %d: validate step %d'
+                                        % (self.gpu_rank, step))
+                        valid_iter = valid_iter_fct()
+                        valid_stats = self.validate(valid_iter)
+                        if self.gpu_verbose_level > 0:
+                            logger.info('GpuRank %d: gather valid stat step %d'
+                                        % (self.gpu_rank, step))
+                        valid_stats = self._maybe_gather_stats(valid_stats)
+                        if self.gpu_verbose_level > 0:
+                            logger.info('GpuRank %d: report stat step %d'
+                                        % (self.gpu_rank, step))
+                        self._report_step(self.optim.learning_rate,
+                                          step, valid_stats=valid_stats)
 
-                if self.gpu_rank == 0:
-                    self._maybe_save(step)
+                    if self.gpu_rank == 0:
+                        self._maybe_save(step)
 
-                step += 1
+                    step += 1
 
             if self.gpu_verbose_level > 0:
                 logger.info('GpuRank %d: we completed an epoch \
