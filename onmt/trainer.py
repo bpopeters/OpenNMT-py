@@ -125,7 +125,7 @@ class Trainer(object):
         logger.info('Start training...')
 
         step = self.optim._step + 1
-        true_batchs = []
+        true_batches = []
         accum = 0
         normalization = 0
         train_iter = train_iter_fct()
@@ -145,7 +145,7 @@ class Trainer(object):
                     cur_dataset = train_iter.get_cur_dataset()
                     self.train_loss.cur_dataset = cur_dataset
 
-                    true_batchs.append(batch)
+                    true_batches.append(batch)
 
                     if self.norm_method == "tokens":
                         num_tokens = batch.tgt[1:].ne(
@@ -161,14 +161,14 @@ class Trainer(object):
                             logger.info("GpuRank %d: reduce_counter: %d \
                                         n_minibatch %d"
                                         % (self.gpu_rank, reduce_counter,
-                                           len(true_batchs)))
+                                           len(true_batches)))
                         if self.n_gpu > 1:
                             normalization = sum(onmt.utils.distributed
                                                 .all_gather_list
                                                 (normalization))
 
                         self._gradient_accumulation(
-                            true_batchs, normalization, total_stats,
+                            true_batches, normalization, total_stats,
                             report_stats)
 
                         report_stats = self._maybe_report_training(
@@ -176,7 +176,7 @@ class Trainer(object):
                             self.optim.learning_rate,
                             report_stats)
 
-                        true_batchs = []
+                        true_batches = []
                         accum = 0
                         normalization = 0
                         if (step % valid_steps == 0):
@@ -245,12 +245,12 @@ class Trainer(object):
 
         return stats
 
-    def _gradient_accumulation(self, true_batchs, normalization, total_stats,
+    def _gradient_accumulation(self, true_batches, normalization, total_stats,
                                report_stats):
         if self.grad_accum_count > 1:
             self.model.zero_grad()
 
-        for batch in true_batchs:
+        for batch in true_batches:
             target_size = batch.tgt.size(0)
             # Truncated BPTT
             if self.trunc_size:
