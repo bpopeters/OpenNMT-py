@@ -8,6 +8,9 @@
           things to users(i.e. how to do it). Also see train.py (one of the
           users of this library) for the strategy things we do.
 """
+import os
+from collections import deque
+
 import torch
 import torch.nn as nn
 
@@ -84,46 +87,49 @@ class Trainer(object):
                  gpu_verbose_level=0, report_every=50,
                  save_checkpoint_steps=5000, keep_checkpoint=-1,
                  save_model='model'):
-        self.model = model
-        self.model_opt = model_opt
-        self.fields = fields
-        self.train_loss = train_loss
-        self.valid_loss = valid_loss
-        self.optim = optim
-        self.trunc_size = trunc_size
-        self.shard_size = shard_size
-        self.data_type = data_type
-        self.norm_method = norm_method
-        self.grad_accum_count = grad_accum_count
-        self.n_gpu = n_gpu
-        self.gpu_rank = gpu_rank
-        self.gpu_verbose_level = gpu_verbose_level
-        self.report_every = report_every
-        self.save_checkpoint_steps = save_checkpoint_steps
-        self.keep_checkpoint = keep_checkpoint
-        self.base_path = save_model
-
         assert grad_accum_count > 0
-        assert grad_accum_count == 1 or self.trunc_size == 0, \
+        assert grad_accum_count == 1 or self._trunc_size == 0, \
             "To enable accumulated gradients, you must disable truncated BPTT."
 
+        self._model = model
+        self._model_opt = model_opt
+        self._fields = fields
+        self._train_loss = train_loss
+        self._valid_loss = valid_loss
+        self._optim = optim
+        self._trunc_size = trunc_size
+        self._shard_size = shard_size
+        self._data_type = data_type
+        self._norm_method = norm_method
+        self._grad_accum_count = grad_accum_count
+        self._n_gpu = n_gpu
+        self._gpu_rank = gpu_rank
+        self._gpu_verbose_level = gpu_verbose_level
+        self._report_every = report_every
+        self._save_checkpoint_steps = save_checkpoint_steps
+        self._keep_checkpoint = keep_checkpoint
+        self._base_path = save_model
+
+        if keep_checkpoint > 0:
+            self._checkpoint_queue = deque([], maxlen=keep_checkpoint)
+
         # Set model in training mode.
-        self.model.train()
+        self._model.train()
 
     @property
     def current_step(self):
-        return self.optim._step + 1
+        return self._optim._step + 1
 
     @property
     def learning_rate(self):
-        return self.optim.learning_rate
+        return self._optim.learning_rate
 
     def _time_to_report(self):
-        return self.current_step % self.report_every == 0
+        return self.current_step % self._report_every == 0
 
     def _time_to_save(self):
-        return self.gpu_rank == 0 and self.keep_checkpoint != 0 and \
-            self.current_step % self.save_checkpoint_steps == 0
+        return self._gpu_rank == 0 and self._keep_checkpoint != 0 and \
+            self.current_step % self._save_checkpoint_steps == 0
 
     def train(self, train_iter_fct, valid_iter_fct, train_steps, valid_steps):
         """
@@ -138,7 +144,6 @@ class Trainer(object):
             valid_iter_fct(function): same as train_iter_fct, for valid data
             train_steps(int):
             valid_steps(int):
-            save_checkpoint_steps(int):
         """
         logger.info('Start training...')
 
@@ -148,37 +153,39 @@ class Trainer(object):
         start_time = total_stats.start_time
 
         while self.current_step <= train_steps:
+            # bug: with 200 each train and validation steps, the model will
+            # train for 250/200 steps.
             # reduce_counter = 0
             train_iter = train_iter_fct()
             for i, batch in enumerate(train_iter):
-                if self.n_gpu != 0 and i % self.n_gpu != self.gpu_rank:
+                if self._n_gpu != 0 and i % self._n_gpu != self._gpu_rank:
                     continue
 
-                if self.gpu_verbose_level > 1:
-                    logger.info("GpuRank %d: index: %d" % (self.gpu_rank, i))
+                if self._gpu_verbose_level > 1:
+                    logger.info("GpuRank %d: index: %d" % (self._gpu_rank, i))
                 cur_dataset = train_iter.get_cur_dataset()
-                self.train_loss.cur_dataset = cur_dataset
+                self._train_loss.cur_dataset = cur_dataset
 
-                if self.norm_method == "tokens":
-                    norm = batch.tgt[1:].ne(self.train_loss.padding_idx).sum()
+                if self._norm_method == "tokens":
+                    norm = batch.tgt[1:].ne(self._train_loss.padding_idx).sum()
                 else:
                     norm = batch.batch_size
-                if self.n_gpu > 1:
+                if self._n_gpu > 1:
                     norm = sum(onmt.utils.distributed.all_gather_list(norm))
 
                 """
                 reduce_counter += 1
-                if self.gpu_verbose_level > 0:
+                if self._gpu_verbose_level > 0:
                     logger.info("GpuRank %d: reduce_counter: %d n_minibatch %d"
-                                % (self.gpu_rank, reduce_counter, 1))
+                                % (self._gpu_rank, reduce_counter, 1))
                 """
 
                 self._train_batch(batch, norm, total_stats, report_stats)
-                if (i + 1) % self.grad_accum_count == 0:
-                    self.optim.step()
-                    self.model.zero_grad()
+                if (i + 1) % self._grad_accum_count == 0:
+                    self._optim.step()
+                    self._model.zero_grad()
 
-                    if self.n_gpu > 1:
+                    if self._n_gpu > 1:
                         report_stats = Statistics.all_gather_stats(
                             report_stats)
                     if self._time_to_report():
@@ -190,19 +197,19 @@ class Trainer(object):
                     report_stats = Statistics()
 
                     if self.current_step % valid_steps == 0:
-                        if self.gpu_verbose_level > 0:
+                        if self._gpu_verbose_level > 0:
                             logger.info('GpuRank %d: validate step %d'
-                                        % (self.gpu_rank, self.current_step))
+                                        % (self._gpu_rank, self.current_step))
                         valid_stats = self.validate(valid_iter_fct())
-                        if self.gpu_verbose_level > 0:
+                        if self._gpu_verbose_level > 0:
                             logger.info('GpuRank %d: gather valid stat step %d'
-                                        % (self.gpu_rank, self.current_step))
-                        if valid_stats is not None and self.n_gpu > 1:
+                                        % (self._gpu_rank, self.current_step))
+                        if valid_stats is not None and self._n_gpu > 1:
                             valid_stats = Statistics.all_gather_stats(
                                 valid_stats)
-                        if self.gpu_verbose_level > 0:
+                        if self._gpu_verbose_level > 0:
                             logger.info('GpuRank %d: report stat step %d'
-                                        % (self.gpu_rank, self.current_step))
+                                        % (self._gpu_rank, self.current_step))
                         logger.info('Validation perplexity: %g'
                                     % valid_stats.ppl())
                         logger.info('Validation accuracy: %g'
@@ -212,9 +219,9 @@ class Trainer(object):
                     if self._time_to_save():
                         self._save()
 
-            if self.gpu_verbose_level > 0:
+            if self._gpu_verbose_level > 0:
                 logger.info('GpuRank %d: we completed an epoch at step %d'
-                            % (self.gpu_rank, self.current_step))
+                            % (self._gpu_rank, self.current_step))
 
         return total_stats
 
@@ -224,30 +231,30 @@ class Trainer(object):
         Returns:
             :obj:`Statistics`: validation loss statistics
         """
-        self.model.eval()
+        self._model.eval()
 
         stats = Statistics()
 
         for batch in valid_iter:
             cur_dataset = valid_iter.get_cur_dataset()
-            self.valid_loss.cur_dataset = cur_dataset
+            self._valid_loss.cur_dataset = cur_dataset
 
-            src = inputters.make_features(batch, 'src', self.data_type)
-            src_lengths = batch.src[1] if self.data_type == 'text' else None
+            src = inputters.make_features(batch, 'src', self._data_type)
+            src_lengths = batch.src[1] if self._data_type == 'text' else None
 
             tgt = inputters.make_features(batch, 'tgt')
 
             # F-prop through the model.
-            outputs, attns, _ = self.model(src, tgt, src_lengths)
+            outputs, attns, _ = self._model(src, tgt, src_lengths)
 
             # Compute loss.
-            batch_stats = self.valid_loss.monolithic_compute_loss(
+            batch_stats = self._valid_loss.monolithic_compute_loss(
                 batch, outputs, attns)
 
             # Update statistics.
             stats.update(batch_stats)
 
-        self.model.train()
+        self._model.train()
 
         return stats
 
@@ -255,19 +262,19 @@ class Trainer(object):
         """
         Previously, the batch training method (which was called
         _gradient_accumulation) was called less than once per batch
-        if self.grad_accum_count > 1.
+        if self._grad_accum_count > 1.
         But there is a simpler way to accumulate gradients:
         just don't step the optimizer and zero the gradients on every
         batch
         """
         target_size = batch.tgt.size(0)
         # Truncated BPTT
-        trunc_size = self.trunc_size if self.trunc_size else target_size
+        trunc_size = self._trunc_size if self._trunc_size else target_size
 
         dec_state = None
-        src = inputters.make_features(batch, 'src', self.data_type)
-        src_lengths = batch.src[1] if self.data_type == 'text' else None
-        if self.data_type == 'text':
+        src = inputters.make_features(batch, 'src', self._data_type)
+        src_lengths = batch.src[1] if self._data_type == 'text' else None
+        if self._data_type == 'text':
             report_stats.n_src_words += src_lengths.sum().item()
 
         tgt_outer = inputters.make_features(batch, 'tgt')
@@ -279,12 +286,12 @@ class Trainer(object):
             # 2. F-prop all but generator.
             # bpop: why was there zero_grad() on each truncation step?
             outputs, attns, dec_state = \
-                self.model(src, tgt, src_lengths, dec_state)
+                self._model(src, tgt, src_lengths, dec_state)
 
             # 3. Compute loss in shards for memory efficiency.
-            batch_stats = self.train_loss.sharded_compute_loss(
+            batch_stats = self._train_loss.sharded_compute_loss(
                 batch, outputs, attns, j,
-                trunc_size, self.shard_size, norm)
+                trunc_size, self._shard_size, norm)
             total_stats.update(batch_stats)
             report_stats.update(batch_stats)
 
@@ -293,16 +300,16 @@ class Trainer(object):
                 dec_state.detach()
 
         # 3.bis Multi GPU gradient gather
-        if self.n_gpu > 1:
-            grads = [p.grad for p in self.model.parameters()
+        if self._n_gpu > 1:
+            grads = [p.grad for p in self._model.parameters()
                      if p.grad is not None]
             onmt.utils.distributed.all_reduce_and_rescale_tensors(
                 grads, float(1))
 
     def _save(self):
-        real_model = (self.model.module
-                      if isinstance(self.model, nn.DataParallel)
-                      else self.model)
+        real_model = (self._model.module
+                      if isinstance(self._model, nn.DataParallel)
+                      else self._model)
         real_generator = (real_model.generator.module
                           if isinstance(real_model.generator, nn.DataParallel)
                           else real_model.generator)
@@ -314,19 +321,18 @@ class Trainer(object):
         checkpoint = {
             'model': model_state_dict,
             'generator': generator_state_dict,
-            'vocab': onmt.inputters.save_fields_to_vocab(self.fields),
-            'opt': self.model_opt,
-            'optim': self.optim,
+            'vocab': onmt.inputters.save_fields_to_vocab(self._fields),
+            'opt': self._model_opt,
+            'optim': self._optim,
         }
 
         logger.info("Saving checkpoint %s_step_%d.pt"
-                    % (self.base_path, self.current_step))
-        checkpoint_path = '%s_step_%d.pt' % (self.base_path, self.current_step)
+                    % (self._base_path, self.current_step))
+        checkpoint_path = '%s_step_%d.pt' \
+            % (self._base_path, self.current_step)
         torch.save(checkpoint, checkpoint_path)
-        """
-        if self.keep_checkpoint > 0:
-            if len(self.checkpoint_queue) == self.checkpoint_queue.maxlen:
-                todel = self.checkpoint_queue.popleft()
-                self._rm_checkpoint(todel)
-            self.checkpoint_queue.append(checkpoint_path)
-        """
+        if self._keep_checkpoint > 0:
+            if len(self._checkpoint_queue) == self._checkpoint_queue.maxlen:
+                todel = self._checkpoint_queue.popleft()
+                os.remove(todel)
+            self._checkpoint_queue.append(checkpoint_path)
