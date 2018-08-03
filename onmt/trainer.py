@@ -5,7 +5,7 @@
 
     Note: To make this a general library, we implement *only*
           mechanism things here(i.e. what to do), and leave the strategy
-          things to users(i.e. how to do it). Also see train.py(one of the
+          things to users(i.e. how to do it). Also see train.py (one of the
           users of this library) for the strategy things we do.
 """
 import torch
@@ -14,6 +14,7 @@ import torch.nn as nn
 import onmt.inputters as inputters
 import onmt.utils
 
+from onmt.utils import Statistics
 from onmt.utils.logging import logger
 
 
@@ -141,8 +142,8 @@ class Trainer(object):
         """
         logger.info('Start training...')
 
-        total_stats = onmt.utils.Statistics()
-        report_stats = onmt.utils.Statistics()
+        total_stats = Statistics()
+        report_stats = Statistics()
 
         start_time = total_stats.start_time
 
@@ -178,7 +179,7 @@ class Trainer(object):
                     self.model.zero_grad()
 
                     if self.n_gpu > 1:
-                        report_stats = onmt.utils.Statistics.all_gather_stats(
+                        report_stats = Statistics.all_gather_stats(
                             report_stats)
                     if self._time_to_report():
                         report_stats.output(
@@ -186,7 +187,7 @@ class Trainer(object):
                             self.learning_rate, start_time)
                         # you additionally do tensorboard writing here
 
-                    report_stats = onmt.utils.Statistics()
+                    report_stats = Statistics()
 
                     if self.current_step % valid_steps == 0:
                         if self.gpu_verbose_level > 0:
@@ -196,7 +197,9 @@ class Trainer(object):
                         if self.gpu_verbose_level > 0:
                             logger.info('GpuRank %d: gather valid stat step %d'
                                         % (self.gpu_rank, self.current_step))
-                        valid_stats = self._maybe_gather_stats(valid_stats)
+                        if valid_stats is not None and self.n_gpu > 1:
+                            valid_stats = Statistics.all_gather_stats(
+                                valid_stats)
                         if self.gpu_verbose_level > 0:
                             logger.info('GpuRank %d: report stat step %d'
                                         % (self.gpu_rank, self.current_step))
@@ -219,11 +222,11 @@ class Trainer(object):
         """ Validate model.
             valid_iter: validate data iterator
         Returns:
-            :obj:`nmt.Statistics`: validation loss statistics
+            :obj:`Statistics`: validation loss statistics
         """
         self.model.eval()
 
-        stats = onmt.utils.Statistics()
+        stats = Statistics()
 
         for batch in valid_iter:
             cur_dataset = valid_iter.get_cur_dataset()
@@ -295,21 +298,6 @@ class Trainer(object):
                      if p.grad is not None]
             onmt.utils.distributed.all_reduce_and_rescale_tensors(
                 grads, float(1))
-
-    def _maybe_gather_stats(self, stat):
-        """
-        Gather statistics in multi-processes cases
-
-        Args:
-            stat(:obj:onmt.utils.Statistics): a Statistics object to gather
-                or None (it returns None in this case)
-
-        Returns:
-            stat: the updated (or unchanged) stat object
-        """
-        if stat is not None and self.n_gpu > 1:
-            return onmt.utils.Statistics.all_gather_stats(stat)
-        return stat
 
     def _save(self):
         real_model = (self.model.module
