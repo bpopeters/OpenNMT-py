@@ -8,13 +8,16 @@
           things to users(i.e. how to do it). Also see train.py(one of the
           users of this library) for the strategy things we do.
 """
+import torch
+import torch.nn as nn
+
 import onmt.inputters as inputters
 import onmt.utils
 
 from onmt.utils.logging import logger
 
 
-def build_trainer(opt, model, fields, optim, data_type, model_saver=None):
+def build_trainer(opt, model_opt, model, fields, optim, data_type):
     """
     Simplify `Trainer` creation based on user `opt`s*
 
@@ -25,8 +28,6 @@ def build_trainer(opt, model, fields, optim, data_type, model_saver=None):
         optim (:obj:`onmt.utils.Optimizer`): optimizer used during training
         data_type (str): string describing the type of data
             e.g. "text", "img", "audio"
-        model_saver(:obj:`onmt.models.ModelSaverBase`): the utility object
-            used to save the model
     """
     train_loss = onmt.utils.loss.build_loss_compute(
         model, fields["tgt"].vocab, opt)
@@ -41,12 +42,15 @@ def build_trainer(opt, model, fields, optim, data_type, model_saver=None):
     gpu_rank = opt.gpu_rank
     gpu_verbose_level = opt.gpu_verbose_level
     report_every = opt.report_every
+    save_checkpoint_steps = opt.save_checkpoint_steps
+    keep_checkpoint = opt.keep_checkpoint
+    save_model = opt.save_model
 
-    trainer = onmt.Trainer(model, train_loss, valid_loss, optim, trunc_size,
-                           shard_size, data_type, norm_method,
-                           grad_accum_count, n_gpu, gpu_rank,
+    trainer = onmt.Trainer(model, model_opt, fields, train_loss, valid_loss,
+                           optim, trunc_size, shard_size, data_type,
+                           norm_method, grad_accum_count, n_gpu, gpu_rank,
                            gpu_verbose_level, report_every,
-                           model_saver=model_saver)
+                           save_checkpoint_steps, keep_checkpoint, save_model)
     return trainer
 
 
@@ -73,11 +77,15 @@ class Trainer(object):
                 Thus nothing will be saved if this parameter is None
     """
 
-    def __init__(self, model, train_loss, valid_loss, optim,
+    def __init__(self, model, model_opt, fields, train_loss, valid_loss, optim,
                  trunc_size=0, shard_size=32, data_type='text',
                  norm_method="sents", grad_accum_count=1, n_gpu=1, gpu_rank=1,
-                 gpu_verbose_level=0, report_every=50, model_saver=None):
+                 gpu_verbose_level=0, report_every=50,
+                 save_checkpoint_steps=5000, keep_checkpoint=-1,
+                 save_model='model'):
         self.model = model
+        self.model_opt = model_opt
+        self.fields = fields
         self.train_loss = train_loss
         self.valid_loss = valid_loss
         self.optim = optim
@@ -90,7 +98,9 @@ class Trainer(object):
         self.gpu_rank = gpu_rank
         self.gpu_verbose_level = gpu_verbose_level
         self.report_every = report_every
-        self.model_saver = model_saver
+        self.save_checkpoint_steps = save_checkpoint_steps
+        self.keep_checkpoint = keep_checkpoint
+        self.base_path = save_model
 
         assert grad_accum_count > 0
         assert grad_accum_count == 1 or self.trunc_size == 0, \
@@ -109,6 +119,10 @@ class Trainer(object):
 
     def _time_to_report(self):
         return self.current_step % self.report_every == 0
+
+    def _time_to_save(self):
+        return self.gpu_rank == 0 and self.keep_checkpoint != 0 and \
+            self.current_step % self.save_checkpoint_steps == 0
 
     def train(self, train_iter_fct, valid_iter_fct, train_steps, valid_steps):
         """
@@ -164,8 +178,6 @@ class Trainer(object):
                     self.model.zero_grad()
 
                     if self.n_gpu > 1:
-                        # then apparently report_stats is a list, although I
-                        # am skeptical of this fact
                         report_stats = onmt.utils.Statistics.all_gather_stats(
                             report_stats)
                     if self._time_to_report():
@@ -188,15 +200,14 @@ class Trainer(object):
                         if self.gpu_verbose_level > 0:
                             logger.info('GpuRank %d: report stat step %d'
                                         % (self.gpu_rank, self.current_step))
-                        # self._report_step(valid_stats=valid_stats)
                         logger.info('Validation perplexity: %g'
                                     % valid_stats.ppl())
                         logger.info('Validation accuracy: %g'
                                     % valid_stats.accuracy())
                         # you additionally do tensorboard writing here
 
-                    if self.gpu_rank == 0:
-                        self._maybe_save()
+                    if self._time_to_save():
+                        self._save()
 
             if self.gpu_verbose_level > 0:
                 logger.info('GpuRank %d: we completed an epoch at step %d'
@@ -210,7 +221,6 @@ class Trainer(object):
         Returns:
             :obj:`nmt.Statistics`: validation loss statistics
         """
-        # Set model in validating mode.
         self.model.eval()
 
         stats = onmt.utils.Statistics()
@@ -234,7 +244,6 @@ class Trainer(object):
             # Update statistics.
             stats.update(batch_stats)
 
-        # Set model back to training mode.
         self.model.train()
 
         return stats
@@ -302,9 +311,34 @@ class Trainer(object):
             return onmt.utils.Statistics.all_gather_stats(stat)
         return stat
 
-    def _maybe_save(self):
+    def _save(self):
+        real_model = (self.model.module
+                      if isinstance(self.model, nn.DataParallel)
+                      else self.model)
+        real_generator = (real_model.generator.module
+                          if isinstance(real_model.generator, nn.DataParallel)
+                          else real_model.generator)
+
+        model_state_dict = real_model.state_dict()
+        model_state_dict = {k: v for k, v in model_state_dict.items()
+                            if 'generator' not in k}
+        generator_state_dict = real_generator.state_dict()
+        checkpoint = {
+            'model': model_state_dict,
+            'generator': generator_state_dict,
+            'vocab': onmt.inputters.save_fields_to_vocab(self.fields),
+            'opt': self.model_opt,
+            'optim': self.optim,
+        }
+
+        logger.info("Saving checkpoint %s_step_%d.pt"
+                    % (self.base_path, self.current_step))
+        checkpoint_path = '%s_step_%d.pt' % (self.base_path, self.current_step)
+        torch.save(checkpoint, checkpoint_path)
         """
-        Save the model if a model saver is set
+        if self.keep_checkpoint > 0:
+            if len(self.checkpoint_queue) == self.checkpoint_queue.maxlen:
+                todel = self.checkpoint_queue.popleft()
+                self._rm_checkpoint(todel)
+            self.checkpoint_queue.append(checkpoint_path)
         """
-        if self.model_saver is not None:
-            self.model_saver.maybe_save(self.current_step)
