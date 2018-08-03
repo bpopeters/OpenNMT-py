@@ -96,10 +96,8 @@ class Trainer(object):
         self.model_saver = model_saver
 
         assert grad_accum_count > 0
-        if grad_accum_count > 1:
-            assert(self.trunc_size == 0), \
-                """To enable accumulated gradients,
-                   you must disable target sequence truncating."""
+        assert grad_accum_count == 1 or self.trunc_size == 0, \
+            "To enable accumulated gradients, you must disable truncated BPTT."
 
         # Set model in training mode.
         self.model.train()
@@ -118,9 +116,6 @@ class Trainer(object):
             train_steps(int):
             valid_steps(int):
             save_checkpoint_steps(int):
-
-        Return:
-            None
         """
         logger.info('Start training...')
 
@@ -133,7 +128,7 @@ class Trainer(object):
 
         while step <= train_steps:
             # reduce_counter = 0
-            for i, batch in enumerate(train_iter_fct()):
+            for i, batch in enumerate(train_iter):
                 if self.n_gpu != 0 and i % self.n_gpu != self.gpu_rank:
                     continue
 
@@ -143,31 +138,20 @@ class Trainer(object):
                 self.train_loss.cur_dataset = cur_dataset
 
                 if self.norm_method == "tokens":
-                    num_tokens = batch.tgt[1:].ne(
-                        self.train_loss.padding_idx).sum()
-                    normalization = num_tokens
+                    norm = batch.tgt[1:].ne(self.train_loss.padding_idx).sum()
                 else:
-                    normalization = batch.batch_size
+                    norm = batch.batch_size
+                if self.n_gpu > 1:
+                    norm = sum(onmt.utils.distributed.all_gather_list(norm))
 
-                # Previously, the batch training method (which was called
-                # _gradient_accumulation) was called less than once per batch
-                # if self.grad_accum_count > 1.
-                # But there is a simpler way to accumulate gradients:
-                # just don't step the optimizer and zero the gradients on every
-                # batch
-                # reduce_counter += 1
                 """
+                reduce_counter += 1
                 if self.gpu_verbose_level > 0:
                     logger.info("GpuRank %d: reduce_counter: %d n_minibatch %d"
                                 % (self.gpu_rank, reduce_counter, 1))
                 """
-                if self.n_gpu > 1:
-                    normalization = sum(onmt.utils.distributed
-                                        .all_gather_list
-                                        (normalization))
 
-                self._train_batch(
-                    batch, normalization, total_stats, report_stats)
+                self._train_batch(batch, norm, total_stats, report_stats)
                 if (i + 1) % self.grad_accum_count == 0:
                     self.optim.step()
                     self.model.zero_grad()
@@ -201,6 +185,7 @@ class Trainer(object):
             if self.gpu_verbose_level > 0:
                 logger.info('GpuRank %d: we completed an epoch at step %d'
                             % (self.gpu_rank, step))
+            train_iter = train_iter_fct()
 
         return total_stats
 
@@ -220,10 +205,7 @@ class Trainer(object):
             self.valid_loss.cur_dataset = cur_dataset
 
             src = inputters.make_features(batch, 'src', self.data_type)
-            if self.data_type == 'text':
-                _, src_lengths = batch.src
-            else:
-                src_lengths = None
+            src_lengths = batch.src[1] if self.data_type == 'text' else None
 
             tgt = inputters.make_features(batch, 'tgt')
 
@@ -242,7 +224,15 @@ class Trainer(object):
 
         return stats
 
-    def _train_batch(self, batch, normalization, total_stats, report_stats):
+    def _train_batch(self, batch, norm, total_stats, report_stats):
+        """
+        Previously, the batch training method (which was called
+        _gradient_accumulation) was called less than once per batch
+        if self.grad_accum_count > 1.
+        But there is a simpler way to accumulate gradients:
+        just don't step the optimizer and zero the gradients on every
+        batch
+        """
         target_size = batch.tgt.size(0)
         # Truncated BPTT
         trunc_size = self.trunc_size if self.trunc_size else target_size
@@ -267,7 +257,7 @@ class Trainer(object):
             # 3. Compute loss in shards for memory efficiency.
             batch_stats = self.train_loss.sharded_compute_loss(
                 batch, outputs, attns, j,
-                trunc_size, self.shard_size, normalization)
+                trunc_size, self.shard_size, norm)
             total_stats.update(batch_stats)
             report_stats.update(batch_stats)
 
