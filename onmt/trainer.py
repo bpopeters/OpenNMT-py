@@ -119,8 +119,7 @@ class Trainer(object):
         """
         logger.info('Start training...')
 
-        step = self.optim._step + 1
-        train_iter = train_iter_fct()
+        step = self.optim._step + 1  # why is the attribute private?
 
         total_stats = onmt.utils.Statistics()
         report_stats = onmt.utils.Statistics()
@@ -128,6 +127,7 @@ class Trainer(object):
 
         while step <= train_steps:
             # reduce_counter = 0
+            train_iter = train_iter_fct()
             for i, batch in enumerate(train_iter):
                 if self.n_gpu != 0 and i % self.n_gpu != self.gpu_rank:
                     continue
@@ -185,7 +185,6 @@ class Trainer(object):
             if self.gpu_verbose_level > 0:
                 logger.info('GpuRank %d: we completed an epoch at step %d'
                             % (self.gpu_rank, step))
-            train_iter = train_iter_fct()
 
         return total_stats
 
@@ -267,9 +266,8 @@ class Trainer(object):
 
         # 3.bis Multi GPU gradient gather
         if self.n_gpu > 1:
-            grads = [p.grad.data for p in self.model.parameters()
-                     if p.requires_grad
-                     and p.grad is not None]
+            grads = [p.grad for p in self.model.parameters()
+                     if p.grad is not None]
             onmt.utils.distributed.all_reduce_and_rescale_tensors(
                 grads, float(1))
 
