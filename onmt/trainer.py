@@ -40,12 +40,13 @@ def build_trainer(opt, model, fields, optim, data_type, model_saver=None):
     n_gpu = len(opt.gpuid)
     gpu_rank = opt.gpu_rank
     gpu_verbose_level = opt.gpu_verbose_level
+    report_every = opt.report_every
 
-    report_manager = onmt.utils.build_report_manager(opt)
+    # report_manager = onmt.utils.build_report_manager(opt)
     trainer = onmt.Trainer(model, train_loss, valid_loss, optim, trunc_size,
                            shard_size, data_type, norm_method,
                            grad_accum_count, n_gpu, gpu_rank,
-                           gpu_verbose_level, report_manager,
+                           gpu_verbose_level, report_every,
                            model_saver=model_saver)
     return trainer
 
@@ -78,7 +79,7 @@ class Trainer(object):
     def __init__(self, model, train_loss, valid_loss, optim,
                  trunc_size=0, shard_size=32, data_type='text',
                  norm_method="sents", grad_accum_count=1, n_gpu=1, gpu_rank=1,
-                 gpu_verbose_level=0, report_manager=None, model_saver=None):
+                 gpu_verbose_level=0, report_every=50, model_saver=None):
         # Basic attributes.
         self.model = model
         self.train_loss = train_loss
@@ -92,7 +93,7 @@ class Trainer(object):
         self.n_gpu = n_gpu
         self.gpu_rank = gpu_rank
         self.gpu_verbose_level = gpu_verbose_level
-        self.report_manager = report_manager
+        self.report_every = report_every
         self.model_saver = model_saver
 
         assert grad_accum_count > 0
@@ -109,6 +110,9 @@ class Trainer(object):
     @property
     def learning_rate(self):
         return self.optim.learning_rate
+
+    def _time_to_report(self):
+        return self.current_step % self.report_every == 0
 
     def train(self, train_iter_fct, valid_iter_fct, train_steps, valid_steps):
         """
@@ -129,7 +133,8 @@ class Trainer(object):
 
         total_stats = onmt.utils.Statistics()
         report_stats = onmt.utils.Statistics()
-        self._start_report_manager(start_time=total_stats.start_time)
+        # self._start_report_manager(start_time=total_stats.start_time)
+        start_time = total_stats.start_time
 
         while self.current_step <= train_steps:
             # reduce_counter = 0
@@ -162,8 +167,21 @@ class Trainer(object):
                     self.optim.step()
                     self.model.zero_grad()
 
-                    report_stats = self._maybe_report_training(
-                        train_steps, report_stats)
+                    if self.n_gpu > 1:
+                        # then apparently report_stats is a list, although I
+                        # am skeptical of this fact
+                        report_stats = onmt.utils.Statistics.all_gather_stats(
+                            report_stats)
+                    if self._time_to_report():
+                        report_stats.output(
+                            self.current_step, train_steps,
+                            self.learning_rate, start_time)
+                        # you may additionally do tensorboard writing here
+
+                    # hidden in the weeds is the fact that afterwards
+                    # report_stats is ALWAYS an empty Statistics object
+                    # self._maybe_report_training(train_steps, report_stats)
+                    report_stats = onmt.utils.Statistics()
 
                     if self.current_step % valid_steps == 0:
                         if self.gpu_verbose_level > 0:
@@ -177,7 +195,12 @@ class Trainer(object):
                         if self.gpu_verbose_level > 0:
                             logger.info('GpuRank %d: report stat step %d'
                                         % (self.gpu_rank, self.current_step))
-                        self._report_step(valid_stats=valid_stats)
+                        # self._report_step(valid_stats=valid_stats)
+                        logger.info('Validation perplexity: %g'
+                                    % valid_stats.ppl())
+                        logger.info('Validation accuracy: %g'
+                                    % valid_stats.accuracy())
+                        # you may additionally do tensorboard writing here
 
                     if self.gpu_rank == 0:
                         self._maybe_save()
