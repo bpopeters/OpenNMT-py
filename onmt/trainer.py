@@ -102,6 +102,14 @@ class Trainer(object):
         # Set model in training mode.
         self.model.train()
 
+    @property
+    def current_step(self):
+        return self.optim._step + 1
+
+    @property
+    def learning_rate(self):
+        return self.optim.learning_rate
+
     def train(self, train_iter_fct, valid_iter_fct, train_steps, valid_steps):
         """
         The main training loops.
@@ -119,13 +127,11 @@ class Trainer(object):
         """
         logger.info('Start training...')
 
-        step = self.optim._step + 1  # why is the attribute private?
-
         total_stats = onmt.utils.Statistics()
         report_stats = onmt.utils.Statistics()
         self._start_report_manager(start_time=total_stats.start_time)
 
-        while step <= train_steps:
+        while self.current_step <= train_steps:
             # reduce_counter = 0
             train_iter = train_iter_fct()
             for i, batch in enumerate(train_iter):
@@ -157,34 +163,28 @@ class Trainer(object):
                     self.model.zero_grad()
 
                     report_stats = self._maybe_report_training(
-                        step, train_steps,
-                        self.optim.learning_rate,
-                        report_stats)
+                        train_steps, report_stats)
 
-                    if step % valid_steps == 0:
+                    if self.current_step % valid_steps == 0:
                         if self.gpu_verbose_level > 0:
                             logger.info('GpuRank %d: validate step %d'
-                                        % (self.gpu_rank, step))
-                        valid_iter = valid_iter_fct()
-                        valid_stats = self.validate(valid_iter)
+                                        % (self.gpu_rank, self.current_step))
+                        valid_stats = self.validate(valid_iter_fct())
                         if self.gpu_verbose_level > 0:
                             logger.info('GpuRank %d: gather valid stat step %d'
-                                        % (self.gpu_rank, step))
+                                        % (self.gpu_rank, self.current_step))
                         valid_stats = self._maybe_gather_stats(valid_stats)
                         if self.gpu_verbose_level > 0:
                             logger.info('GpuRank %d: report stat step %d'
-                                        % (self.gpu_rank, step))
-                        self._report_step(self.optim.learning_rate,
-                                          step, valid_stats=valid_stats)
+                                        % (self.gpu_rank, self.current_step))
+                        self._report_step(valid_stats=valid_stats)
 
                     if self.gpu_rank == 0:
-                        self._maybe_save(step)
-
-                    step += 1
+                        self._maybe_save()
 
             if self.gpu_verbose_level > 0:
                 logger.info('GpuRank %d: we completed an epoch at step %d'
-                            % (self.gpu_rank, step))
+                            % (self.gpu_rank, self.current_step))
 
         return total_stats
 
@@ -296,31 +296,29 @@ class Trainer(object):
             return onmt.utils.Statistics.all_gather_stats(stat)
         return stat
 
-    def _maybe_report_training(self, step, num_steps, learning_rate,
-                               report_stats):
+    def _maybe_report_training(self, num_steps, report_stats):
         """
         Simple function to report training stats (if report_manager is set)
         see `onmt.utils.ReportManagerBase.report_training` for doc
         """
         if self.report_manager is not None:
             return self.report_manager.report_training(
-                step, num_steps, learning_rate, report_stats,
+                self.current_step, num_steps, self.learning_rate, report_stats,
                 multigpu=self.n_gpu > 1)
 
-    def _report_step(self, learning_rate, step, train_stats=None,
-                     valid_stats=None):
+    def _report_step(self, train_stats=None, valid_stats=None):
         """
         Simple function to report stats (if report_manager is set)
         see `onmt.utils.ReportManagerBase.report_step` for doc
         """
         if self.report_manager is not None:
             return self.report_manager.report_step(
-                learning_rate, step, train_stats=train_stats,
+                self.learning_rate, self.current_step, train_stats=train_stats,
                 valid_stats=valid_stats)
 
-    def _maybe_save(self, step):
+    def _maybe_save(self):
         """
         Save the model if a model saver is set
         """
         if self.model_saver is not None:
-            self.model_saver.maybe_save(step)
+            self.model_saver.maybe_save(self.current_step)
