@@ -95,9 +95,6 @@ class Trainer(object):
             data_type(string): type of the source input: [text|img|audio]
             norm_method(string): normalization methods: [sents|tokens]
             grad_accum_count(int): accumulate gradients this many times.
-            model_saver(:obj:`onmt.models.ModelSaverBase`): the saver is
-                used to save a checkpoint.
-                Thus nothing will be saved if this parameter is None
     """
 
     def __init__(self, model, model_opt, fields, train_loss, valid_loss, optim,
