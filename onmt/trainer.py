@@ -9,6 +9,7 @@
           users of this library) for the strategy things we do.
 """
 import os
+from datetime import datetime
 from collections import deque
 from itertools import count
 
@@ -50,12 +51,20 @@ def build_trainer(opt, model_opt, model, fields, optim, data_type):
     save_checkpoint_steps = opt.save_checkpoint_steps
     keep_checkpoint = opt.keep_checkpoint
     save_model = opt.save_model
+    if opt.tensorboard:
+        from tensorboardX import SummaryWriter
+        writer = SummaryWriter(opt.tensorboard_log_dir
+                               + datetime.now().strftime("/%b-%d_%H-%M-%S"),
+                               comment="Unmt")
+    else:
+        writer = None
 
     trainer = onmt.Trainer(model, model_opt, fields, train_loss, valid_loss,
                            optim, trunc_size, shard_size, data_type,
                            norm_method, grad_accum_count, n_gpu, gpu_rank,
                            gpu_verbose_level, report_every,
-                           save_checkpoint_steps, keep_checkpoint, save_model)
+                           save_checkpoint_steps, keep_checkpoint, save_model,
+                           writer)
     return trainer
 
 
@@ -96,7 +105,7 @@ class Trainer(object):
                  norm_method="sents", grad_accum_count=1, n_gpu=1, gpu_rank=1,
                  gpu_verbose_level=0, report_every=50,
                  save_checkpoint_steps=5000, keep_checkpoint=-1,
-                 save_model='model'):
+                 save_model='model', writer=None):
         assert grad_accum_count > 0
         assert grad_accum_count == 1 or self._trunc_size == 0, \
             "To enable accumulated gradients, you must disable truncated BPTT."
@@ -119,6 +128,7 @@ class Trainer(object):
         self._save_checkpoint_steps = save_checkpoint_steps
         self._keep_checkpoint = keep_checkpoint
         self._base_path = save_model
+        self._tensorboard_writer = writer
 
         if keep_checkpoint > 0:
             self._checkpoint_queue = deque([], maxlen=keep_checkpoint)
@@ -149,6 +159,11 @@ class Trainer(object):
         if self._n_gpu > 1:
             norm = sum(onmt.utils.distributed.all_gather_list(norm))
         return norm
+
+    def _log_tensorboard(self, stats, prefix):
+        stats.log_tensorboard(
+                prefix, self._tensorboard_writer,
+                self._learning_rate, self.current_step)
 
     def train(self, train_iter_fct, valid_iter_fct, train_steps, valid_steps):
         """
@@ -210,11 +225,14 @@ class Trainer(object):
                 report_stats.output(
                     self.current_step, train_steps,
                     self.learning_rate, start_time)
-                # you additionally do tensorboard writing here
+                if self._tensorboard_writer is not None:
+                    self._log_tensorboard(report_stats, "progress")
 
             report_stats = Statistics()
 
             if self.current_step % valid_steps == 0:
+                # would be nice if this were in the validation method to
+                # make the flow clearer
                 if self._gpu_verbose_level > 0:
                     logger.info('GpuRank %d: validate step %d'
                                 % (self._gpu_rank, self.current_step))
@@ -229,6 +247,8 @@ class Trainer(object):
                                 % (self._gpu_rank, self.current_step))
                 logger.info('Validation perplexity: %g' % valid_stats.ppl())
                 logger.info('Validation accuracy: %g' % valid_stats.accuracy())
+                if self._tensorboard_writer is not None:
+                    self._log_tensorboard(report_stats, "valid")
                 # you additionally do tensorboard writing here
 
             if self._time_to_save():
