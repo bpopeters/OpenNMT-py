@@ -10,6 +10,7 @@
 """
 import os
 from collections import deque
+from itertools import count
 
 import torch
 import torch.nn as nn
@@ -56,6 +57,15 @@ def build_trainer(opt, model_opt, model, fields, optim, data_type):
                            gpu_verbose_level, report_every,
                            save_checkpoint_steps, keep_checkpoint, save_model)
     return trainer
+
+
+def cycle_batches(train_iter_fct):
+    "Kind of similar to itertools.cycle"
+    for epoch in count(1):
+        train_iter = train_iter_fct()
+        current_dataset = train_iter.get_cur_dataset()
+        for i, batch in enumerate(train_iter):
+            yield current_dataset, epoch, i, batch
 
 
 class Trainer(object):
@@ -131,6 +141,15 @@ class Trainer(object):
         return self._gpu_rank == 0 and self._keep_checkpoint != 0 and \
             self.current_step % self._save_checkpoint_steps == 0
 
+    def _norm(self, batch):
+        if self._norm_method == "tokens":
+            norm = batch.tgt[1:].ne(self._train_loss.padding_idx).sum()
+        else:
+            norm = batch.batch_size
+        if self._n_gpu > 1:
+            norm = sum(onmt.utils.distributed.all_gather_list(norm))
+        return norm
+
     def train(self, train_iter_fct, valid_iter_fct, train_steps, valid_steps):
         """
         The main training loops.
@@ -152,77 +171,73 @@ class Trainer(object):
 
         start_time = total_stats.start_time
 
-        while self.current_step <= train_steps:
-            # bug: with 200 each train and validation steps, the model will
-            # train for 250/200 steps.
-            # reduce_counter = 0
-            train_iter = train_iter_fct()
-            for i, batch in enumerate(train_iter):
-                if self._n_gpu != 0 and i % self._n_gpu != self._gpu_rank:
-                    continue
+        batch_count = range(0, train_steps * self._grad_accum_count)
+        batches = cycle_batches(train_iter_fct)
+        for step, (cur_dataset, epoch, i, batch) in zip(batch_count, batches):
+            if self._n_gpu != 0 and i % self._n_gpu != self._gpu_rank:
+                continue
 
-                if self._gpu_verbose_level > 1:
-                    logger.info("GpuRank %d: index: %d" % (self._gpu_rank, i))
-                cur_dataset = train_iter.get_cur_dataset()
-                self._train_loss.cur_dataset = cur_dataset
+            if self._gpu_verbose_level > 1:
+                logger.info("GpuRank %d: index: %d" % (self._gpu_rank, i))
+            self._train_loss.cur_dataset = cur_dataset
 
-                if self._norm_method == "tokens":
-                    norm = batch.tgt[1:].ne(self._train_loss.padding_idx).sum()
-                else:
-                    norm = batch.batch_size
-                if self._n_gpu > 1:
-                    norm = sum(onmt.utils.distributed.all_gather_list(norm))
+            # compute normalization for the batch
+            norm = self._norm(batch)
 
-                """
-                reduce_counter += 1
+            """
+            reduce_counter += 1
+            if self._gpu_verbose_level > 0:
+                logger.info("GpuRank %d: reduce_counter: %d n_minibatch %d"
+                            % (self._gpu_rank, reduce_counter, 1))
+            """
+
+            # compute forward and backward passes for the batch
+            self._train_batch(batch, norm, total_stats, report_stats)
+
+            if (i + 1) % self._grad_accum_count != 0:
+                # don't update parameters if you're accumulating gradients
+                # and it isn't the right time
+                continue
+
+            # update parameters, log, etc.
+            self._optim.step()
+            self._model.zero_grad()
+
+            # do special update to stats in multigpu case
+            if self._n_gpu > 1:
+                report_stats = Statistics.all_gather_stats(report_stats)
+            if self._time_to_report():
+                report_stats.output(
+                    self.current_step, train_steps,
+                    self.learning_rate, start_time)
+                # you additionally do tensorboard writing here
+
+            report_stats = Statistics()
+
+            if self.current_step % valid_steps == 0:
                 if self._gpu_verbose_level > 0:
-                    logger.info("GpuRank %d: reduce_counter: %d n_minibatch %d"
-                                % (self._gpu_rank, reduce_counter, 1))
-                """
+                    logger.info('GpuRank %d: validate step %d'
+                                % (self._gpu_rank, self.current_step))
+                valid_stats = self.validate(valid_iter_fct())
+                if self._gpu_verbose_level > 0:
+                    logger.info('GpuRank %d: gather valid stat step %d'
+                                % (self._gpu_rank, self.current_step))
+                if valid_stats is not None and self._n_gpu > 1:
+                    valid_stats = Statistics.all_gather_stats(valid_stats)
+                if self._gpu_verbose_level > 0:
+                    logger.info('GpuRank %d: report stat step %d'
+                                % (self._gpu_rank, self.current_step))
+                logger.info('Validation perplexity: %g' % valid_stats.ppl())
+                logger.info('Validation accuracy: %g' % valid_stats.accuracy())
+                # you additionally do tensorboard writing here
 
-                self._train_batch(batch, norm, total_stats, report_stats)
-                if (i + 1) % self._grad_accum_count == 0:
-                    self._optim.step()
-                    self._model.zero_grad()
-
-                    if self._n_gpu > 1:
-                        report_stats = Statistics.all_gather_stats(
-                            report_stats)
-                    if self._time_to_report():
-                        report_stats.output(
-                            self.current_step, train_steps,
-                            self.learning_rate, start_time)
-                        # you additionally do tensorboard writing here
-
-                    report_stats = Statistics()
-
-                    if self.current_step % valid_steps == 0:
-                        if self._gpu_verbose_level > 0:
-                            logger.info('GpuRank %d: validate step %d'
-                                        % (self._gpu_rank, self.current_step))
-                        valid_stats = self.validate(valid_iter_fct())
-                        if self._gpu_verbose_level > 0:
-                            logger.info('GpuRank %d: gather valid stat step %d'
-                                        % (self._gpu_rank, self.current_step))
-                        if valid_stats is not None and self._n_gpu > 1:
-                            valid_stats = Statistics.all_gather_stats(
-                                valid_stats)
-                        if self._gpu_verbose_level > 0:
-                            logger.info('GpuRank %d: report stat step %d'
-                                        % (self._gpu_rank, self.current_step))
-                        logger.info('Validation perplexity: %g'
-                                    % valid_stats.ppl())
-                        logger.info('Validation accuracy: %g'
-                                    % valid_stats.accuracy())
-                        # you additionally do tensorboard writing here
-
-                    if self._time_to_save():
-                        self._save()
-
+            if self._time_to_save():
+                self._save()
+            """
             if self._gpu_verbose_level > 0:
                 logger.info('GpuRank %d: we completed an epoch at step %d'
                             % (self._gpu_rank, self.current_step))
-
+            """
         return total_stats
 
     def validate(self, valid_iter):
