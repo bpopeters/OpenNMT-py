@@ -48,6 +48,7 @@ def build_trainer(opt, model_opt, model, fields, optim, data_type):
     gpu_rank = opt.gpu_rank
     gpu_verbose_level = opt.gpu_verbose_level
     report_every = opt.report_every
+    validate_every = opt.valid_steps
     save_checkpoint_steps = opt.save_checkpoint_steps
     keep_checkpoint = opt.keep_checkpoint
     save_model = opt.save_model
@@ -62,7 +63,7 @@ def build_trainer(opt, model_opt, model, fields, optim, data_type):
     trainer = onmt.Trainer(model, model_opt, fields, train_loss, valid_loss,
                            optim, trunc_size, shard_size, data_type,
                            norm_method, grad_accum_count, n_gpu, gpu_rank,
-                           gpu_verbose_level, report_every,
+                           gpu_verbose_level, report_every, validate_every,
                            save_checkpoint_steps, keep_checkpoint, save_model,
                            writer)
     return trainer
@@ -100,11 +101,11 @@ class Trainer(object):
     def __init__(self, model, model_opt, fields, train_loss, valid_loss, optim,
                  trunc_size=0, shard_size=32, data_type='text',
                  norm_method="sents", grad_accum_count=1, n_gpu=1, gpu_rank=1,
-                 gpu_verbose_level=0, report_every=50,
+                 gpu_verbose_level=0, report_every=50, validate_every=10000,
                  save_checkpoint_steps=5000, keep_checkpoint=-1,
                  save_model='model', writer=None):
         assert grad_accum_count > 0
-        assert grad_accum_count == 1 or self._trunc_size == 0, \
+        assert grad_accum_count == 1 or trunc_size == 0, \
             "To enable accumulated gradients, you must disable truncated BPTT."
 
         self._model = model
@@ -122,6 +123,7 @@ class Trainer(object):
         self._gpu_rank = gpu_rank
         self._gpu_verbose_level = gpu_verbose_level
         self._report_every = report_every
+        self._validate_every = validate_every
         self._save_checkpoint_steps = save_checkpoint_steps
         self._keep_checkpoint = keep_checkpoint
         self._base_path = save_model
@@ -138,31 +140,14 @@ class Trainer(object):
         return self._optim._step + 1
 
     @property
+    def multigpu(self):
+        return self._n_gpu > 1
+
+    @property
     def learning_rate(self):
         return self._optim.learning_rate
 
-    def _time_to_report(self):
-        return self.current_step % self._report_every == 0
-
-    def _time_to_save(self):
-        return self._gpu_rank == 0 and self._keep_checkpoint != 0 and \
-            self.current_step % self._save_checkpoint_steps == 0
-
-    def _norm(self, batch):
-        if self._norm_method == "tokens":
-            norm = batch.tgt[1:].ne(self._train_loss.padding_idx).sum()
-        else:
-            norm = batch.batch_size
-        if self._n_gpu > 1:
-            norm = sum(onmt.utils.distributed.all_gather_list(norm))
-        return norm
-
-    def _log_tensorboard(self, stats, prefix):
-        stats.log_tensorboard(
-                prefix, self._tensorboard_writer,
-                self._learning_rate, self.current_step)
-
-    def train(self, train_iter_fct, valid_iter_fct, train_steps, valid_steps):
+    def train(self, train_iter_fct, valid_iter_fct, train_steps):
         """
         The main training loops.
         by iterating over training data (i.e. `train_iter_fct`)
@@ -174,7 +159,6 @@ class Trainer(object):
                 train_iter_fct = lambda: generator(*args, **kwargs)
             valid_iter_fct(function): same as train_iter_fct, for valid data
             train_steps(int):
-            valid_steps(int):
         """
         logger.info('Start training...')
 
@@ -184,8 +168,8 @@ class Trainer(object):
         start_time = total_stats.start_time
 
         batch_count = range(0, train_steps * self._grad_accum_count)
-        batches = cycle_batches(train_iter_fct)
-        for step, (cur_dataset, epoch, i, batch) in zip(batch_count, batches):
+        batches = cycle_batches(train_iter_fct)  # not sure I like this now
+        for _, (cur_dataset, epoch, i, batch) in zip(batch_count, batches):
             if self._n_gpu != 0 and i % self._n_gpu != self._gpu_rank:
                 continue
 
@@ -193,7 +177,6 @@ class Trainer(object):
                 logger.info("GpuRank %d: index: %d" % (self._gpu_rank, i))
             self._train_loss.cur_dataset = cur_dataset
 
-            # compute normalization for the batch
             norm = self._norm(batch)
 
             """
@@ -206,17 +189,15 @@ class Trainer(object):
             # compute forward and backward passes for the batch
             self._train_batch(batch, norm, total_stats, report_stats)
 
-            if (i + 1) % self._grad_accum_count != 0:
-                # don't update parameters if you're accumulating gradients
-                # and it isn't the right time
+            if not self._time_to_step(i):
                 continue
 
-            # update parameters, log, etc.
+            # update parameters
             self._optim.step()
             self._model.zero_grad()
 
             # do special update to stats in multigpu case
-            if self._n_gpu > 1:
+            if self.multigpu:
                 report_stats = Statistics.all_gather_stats(report_stats)
             if self._time_to_report():
                 report_stats.output(
@@ -227,7 +208,7 @@ class Trainer(object):
 
             report_stats = Statistics()
 
-            if self.current_step % valid_steps == 0:
+            if self._time_to_validate():
                 if self._gpu_verbose_level > 0:
                     logger.info('GpuRank %d: validate step %d'
                                 % (self._gpu_rank, self.current_step))
@@ -236,7 +217,8 @@ class Trainer(object):
                     logger.info('GpuRank %d: gather valid stat step %d'
                                 % (self._gpu_rank, self.current_step))
                 if valid_stats is not None and self._n_gpu > 1:
-                    valid_stats = Statistics.all_gather_stats(valid_stats)
+                    valid_stats = Statistics.all_gather_stats(
+                        self._validate_every)
                 if self._gpu_verbose_level > 0:
                     logger.info('GpuRank %d: report stat step %d'
                                 % (self._gpu_rank, self.current_step))
@@ -273,14 +255,11 @@ class Trainer(object):
 
             tgt = inputters.make_features(batch, 'tgt')
 
-            # F-prop through the model.
             outputs, attns, _ = self._model(src, tgt, src_lengths)
 
-            # Compute loss.
             batch_stats = self._valid_loss.monolithic_compute_loss(
                 batch, outputs, attns)
 
-            # Update statistics.
             stats.update(batch_stats)
 
         self._model.train()
@@ -334,6 +313,33 @@ class Trainer(object):
                      if p.grad is not None]
             onmt.utils.distributed.all_reduce_and_rescale_tensors(
                 grads, float(1))
+
+    def _time_to_step(self, batch_step):
+        return (batch_step + 1) % self._grad_accum_count == 0
+
+    def _time_to_report(self):
+        return self.current_step % self._report_every == 0
+
+    def _time_to_validate(self):
+        return self.current_step % self._validate_every == 0
+
+    def _time_to_save(self):
+        return self._gpu_rank == 0 and self._keep_checkpoint != 0 and \
+            self.current_step % self._save_checkpoint_steps == 0
+
+    def _norm(self, batch):
+        if self._norm_method == "tokens":
+            norm = batch.tgt[1:].ne(self._train_loss.padding_idx).sum()
+        else:
+            norm = batch.batch_size
+        if self.multigpu:
+            norm = sum(onmt.utils.distributed.all_gather_list(norm))
+        return norm
+
+    def _log_tensorboard(self, stats, prefix):
+        stats.log_tensorboard(
+                prefix, self._tensorboard_writer,
+                self._learning_rate, self.current_step)
 
     def _save(self):
         real_model = (self._model.module
