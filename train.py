@@ -2,8 +2,6 @@
 """
     Main training workflow
 """
-from __future__ import division
-
 import argparse
 
 import onmt.opts as opts
