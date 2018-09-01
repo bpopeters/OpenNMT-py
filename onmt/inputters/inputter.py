@@ -9,10 +9,11 @@ from functools import partial
 
 import torch
 import torchtext.data
+from torchtext.data import Field
 from torchtext.vocab import Vocab
 
 from onmt.inputters.dataset_base import UNK_WORD, PAD_WORD, BOS_WORD, EOS_WORD
-from onmt.inputters.text_dataset import TextDataset, extract_text_features
+from onmt.inputters.text_dataset import TextDataset
 from onmt.inputters.image_dataset import ImageDataset
 from onmt.inputters.audio_dataset import AudioDataset
 from onmt.utils.logging import logger
@@ -85,6 +86,10 @@ def make_audio(data, vocab):
     return sounds
 
 
+def tokenize(data, word_sep, feature_sep, index=0):
+    return [token.split(feature_sep)[index] for token in data.split(word_sep)]
+
+
 def get_fields(data_type, n_src_features, n_tgt_features, dynamic_dict=False):
     """
     Args:
@@ -103,48 +108,53 @@ def get_fields(data_type, n_src_features, n_tgt_features, dynamic_dict=False):
     if data_type not in ['text', 'img', 'audio']:
         raise ValueError("Data type not implemented")
 
-    fields = {}
+    fields = defaultdict(list)
 
     # at the moment, "data_type" only refers to the source
+    word_tok = partial(tokenize, word_sep=None, feature_sep=u"￨", index=0)
     if data_type == 'text':
-        fields["src"] = torchtext.data.Field(
-            tokenize=str.split, pad_token=PAD_WORD, include_lengths=True)
+        fields["src"].append(('src', Field(
+            tokenize=word_tok, pad_token=PAD_WORD, include_lengths=True)))
     elif data_type == 'img':
-        fields["src"] = torchtext.data.Field(
+        fields["src"].append(('src', Field(
             tokenize=str.split, use_vocab=False, dtype=torch.float,
-            postprocessing=make_img, sequential=False)
+            postprocessing=make_img, sequential=False)))
     else:
-        fields["src"] = torchtext.data.Field(
+        fields["src"].append(('src', Field(
             tokenize=str.split, use_vocab=False, dtype=torch.float,
-            postprocessing=make_audio, sequential=False)
+            postprocessing=make_audio, sequential=False)))
 
-    for j in range(n_src_features):
-        fields["src_feat_" + str(j)] = torchtext.data.Field(
-            pad_token=PAD_WORD, tokenize=str.split)
+    for j in range(1, n_src_features + 1):
+        feat_tok = partial(tokenize, word_sep=None, feature_sep=u"￨", index=j)
+        fields["src"].append(('src_feat_' + str(j), Field(
+            pad_token=PAD_WORD, tokenize=feat_tok)))
 
-    fields["tgt"] = torchtext.data.Field(
+    fields["tgt"].append(('tgt', Field(
             init_token=BOS_WORD, eos_token=EOS_WORD,
-            pad_token=PAD_WORD, tokenize=str.split)
+            pad_token=PAD_WORD, tokenize=word_tok)))
 
-    for j in range(n_tgt_features):
-        fields["tgt_feat_" + str(j)] = \
-            torchtext.data.Field(init_token=BOS_WORD, eos_token=EOS_WORD,
-                                 pad_token=PAD_WORD, tokenize=str.split)
+    for j in range(1, n_tgt_features + 1):
+        feat_tok = partial(tokenize, word_sep=None, feature_sep=u"￨", index=j)
+        fields["tgt"].append(('tgt_feat_' + str(j), Field(
+            init_token=BOS_WORD, eos_token=EOS_WORD,
+            pad_token=PAD_WORD, tokenize=feat_tok)))
 
-    fields["indices"] = torchtext.data.Field(
+    fields["indices"].append(('indices', Field(
         use_vocab=False, dtype=torch.long,
-        sequential=False, tokenize=str.split)
+        sequential=False, tokenize=str.split)))
 
     if dynamic_dict:
-        fields["src_map"] = torchtext.data.Field(
-            use_vocab=False, dtype=torch.float,
-            postprocessing=make_src_map, sequential=False, tokenize=str.split)
+        fields["src_map"].append(
+            ('src_map',
+             Field(use_vocab=False, dtype=torch.float,
+                   postprocessing=make_src_map, sequential=False,
+                   tokenize=str.split)))
 
-        fields["alignment"] = torchtext.data.Field(
+        fields["alignment"].append(('alignment', Field(
             use_vocab=False, dtype=torch.long,
-            postprocessing=make_tgt, sequential=False, tokenize=str.split)
+            postprocessing=make_tgt, sequential=False, tokenize=str.split)))
 
-    return fields
+    return dict(fields)
 
 
 def vocab_to_fields(vocab, data_type="text"):
@@ -213,9 +223,8 @@ def num_features(corpus_file):
     # in the long run tokenization (including for the features) should be
     # a field issue.
     with io.open(corpus_file, "r", encoding="utf-8") as f:
-        feature_line = f.readline().strip().split()
-        _, _, num_feats = extract_text_features(feature_line)
-    return num_feats
+        word = f.readline().strip().split(None, 1)[0]
+        return sum(char == u"￨" for char in word)
 
 
 def make_features(batch, side, data_type='text'):
@@ -260,7 +269,7 @@ def collect_feature_vocabs(fields, side):
     # same reason, but at translation time)
     assert side in ['src', 'tgt']
     feature_vocabs = []
-    for j in count():
+    for j in count(1):
         key = side + "_feat_" + str(j)
         if key not in fields:
             break
@@ -455,6 +464,7 @@ class DatasetLazyIter(object):
         device: the GPU device.
         is_train (bool): train or valid?
     """
+    # invoked only in build_dataset_iter, immediately below
 
     def __init__(self, datasets, batch_size, batch_size_fn, device, is_train):
         self.datasets = datasets

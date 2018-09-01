@@ -38,9 +38,6 @@ class DatasetBase(Dataset):
         # self.src_vocabs: mutated in dynamic_dict, used in translation.py
         self.src_vocabs = []
 
-        # another question: why is the Dataset constructor used in preprocess
-        # and translate but not train?
-
         if tgt_examples_iter is not None:
             examples_iter = (_join_dicts(src, tgt) for src, tgt in
                              zip(src_examples_iter, tgt_examples_iter))
@@ -50,12 +47,8 @@ class DatasetBase(Dataset):
         if dynamic_dict:
             examples_iter = (self._dynamic_dict(ex) for ex in examples_iter)
 
-        fields = list(fields.items())
-        # there's a problem here if the dataset doesn't have a tgt at
-        # translation time
-        example_values = ([ex[k] for k, v in fields] for ex in examples_iter)
-
-        examples = [Example.fromlist(ev, fields) for ev in example_values]
+        examples = [Example.fromdict(ex, fields) for ex in examples_iter]
+        fields = dict(chain.from_iterable(fields.values()))  # flatten fields
 
         super(DatasetBase, self).__init__(examples, fields, filter_pred)
 

@@ -7,30 +7,6 @@ import torch
 from onmt.inputters.dataset_base import DatasetBase
 
 
-def extract_text_features(tokens):
-    """
-    Args:
-        tokens: A list of tokens, where each token consists of a word,
-            optionally followed by u"￨"-delimited features.
-    Returns:
-        A sequence of words, a sequence of features, and num of features.
-    """
-    if not tokens:
-        return [], [], -1
-
-    split_tokens = [token.split(u"￨") for token in tokens]
-    split_tokens = [token for token in split_tokens if token[0]]
-    token_size = len(split_tokens[0])
-
-    assert all(len(token) == token_size for token in split_tokens), \
-        "all words must have the same number of features"
-    words_and_features = list(zip(*split_tokens))
-    words = words_and_features[0]
-    features = words_and_features[1:]
-
-    return words, features, token_size - 1
-
-
 class TextDataset(DatasetBase):
     """ Dataset for data_type=='text'
 
@@ -96,18 +72,7 @@ class TextDataset(DatasetBase):
 
     @classmethod
     def _make_example(cls, line, truncate, side, **kwargs):
-        line = line.strip().split()
-        if truncate:
-            line = line[:truncate]
-
-        words, feats, _ = extract_text_features(line)
-
-        example_dict = {side: words}
-        if feats:
-            prefix = side + "_feat_"
-            example_dict.update((prefix + str(j), f)
-                                for j, f in enumerate(feats))
-        return example_dict
+        return {side: line}
 
     @classmethod
     def _make_iterator_from_file(cls, path, **kwargs):
