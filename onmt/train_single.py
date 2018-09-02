@@ -2,8 +2,6 @@
 """
     Training on a single process
 """
-from __future__ import division
-
 import argparse
 import os
 import random
@@ -16,7 +14,6 @@ from onmt.inputters.inputter import build_dataset_iter, lazily_load_dataset, \
 from onmt.model_builder import build_model
 from onmt.utils.optimizers import build_optim
 from onmt.trainer import build_trainer
-from onmt.models import build_model_saver
 from onmt.utils.logging import init_logger, logger
 
 
@@ -48,7 +45,7 @@ def training_opt_postprocessing(opt):
         opt.enc_layers = opt.layers
         opt.dec_layers = opt.layers
 
-    opt.brnn = (opt.encoder_type == "brnn")
+    opt.brnn = opt.encoder_type == "brnn"
 
     if opt.rnn_type == "SRU" and not opt.gpuid:
         raise AssertionError("Using SRU requires -gpuid set.")
@@ -124,11 +121,7 @@ def main(opt):
     # Build optimizer.
     optim = build_optim(model, opt, checkpoint)
 
-    # Build model saver
-    model_saver = build_model_saver(model_opt, opt, model, fields, optim)
-
-    trainer = build_trainer(
-        opt, model, fields, optim, data_type, model_saver=model_saver)
+    trainer = build_trainer(opt, model_opt, model, fields, optim, data_type)
 
     def train_iter_fct(): return build_dataset_iter(
         lazily_load_dataset("train", opt.data), opt)
@@ -137,11 +130,7 @@ def main(opt):
         lazily_load_dataset("valid", opt.data), opt)
 
     # Do training.
-    trainer.train(train_iter_fct, valid_iter_fct, opt.train_steps,
-                  opt.valid_steps)
-
-    if opt.tensorboard:
-        trainer.report_manager.tensorboard_writer.close()
+    trainer.train(train_iter_fct, valid_iter_fct, opt.train_steps)
 
 
 if __name__ == "__main__":
