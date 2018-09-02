@@ -423,6 +423,8 @@ def translate_opts(parser):
     group = parser.add_argument_group('Data')
     group.add_argument('-data_type', default="text",
                        help="Type of the source input. Options: [text|img].")
+    group.add_argument('-fields', required=True,
+                       help='Location of fields pt file')
 
     group.add_argument('-src', required=True,
                        help="""Source sequence to decode (one line per

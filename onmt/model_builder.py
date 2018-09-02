@@ -132,17 +132,17 @@ def load_test_model(opt, dummy_opt, model_path=None):
     checkpoint = torch.load(model_path,
                             map_location=lambda storage, loc: storage)
 
-    fields = inputters.vocab_to_fields(
-        checkpoint['vocab'], data_type=opt.data_type)
+    fields = torch.load(opt.fields)
+
     if opt.data_type == 'text':
         # is model_opt.model_type the same as data_type?
-        src_dict = fields["src"].vocab
-        src_feat_vocabs = inputters.collect_feature_vocabs(fields, 'src')
+        src_dict = fields["src"][0][1].vocab
+        src_feat_vocabs = [f.vocab for n, f in fields["src"][1:]]
     else:
         src_dict = None
         src_feat_vocabs = []
-    tgt_dict = fields["tgt"].vocab
-    tgt_feat_vocabs = inputters.collect_feature_vocabs(fields, 'tgt')
+    tgt_dict = fields["tgt"][0][1].vocab
+    tgt_feat_vocabs = [f.vocab for n, f in fields["tgt"][1:]]
 
     model_opt = checkpoint['opt']
     for arg in dummy_opt:

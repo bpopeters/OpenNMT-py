@@ -157,34 +157,6 @@ def get_fields(data_type, n_src_features, n_tgt_features, dynamic_dict=False):
     return dict(fields)
 
 
-def vocab_to_fields(vocab, data_type="text"):
-    """
-    vocab: a list of (str, torchtext.vocab.Vocab) tuples (always?)
-    data_type: text, img, or audio
-    returns: a dict whose keys are the strings from the input vocab and whose
-        values are fields created by a call to get_fields.
-    """
-    # this function is used:
-    # 1) in model_builder.py, in the function load_test_model, which is used
-    # in translator.py.
-    # 2) in extract_embeddings.py, in order to build the model whose embeddings
-    # will get extracted (this through a call to
-    # model_builder.build_base_model, which needs the fields as an argument
-    # to inputters.collect_feature_vocabs, which it uses so that it can
-    # have access to the feature vocabularies.
-    n_src_features = len([name for name, v in vocab if 'src_feat' in name])
-    n_tgt_features = len([name for name, v in vocab if 'tgt_feat' in name])
-    fields = get_fields(data_type, n_src_features, n_tgt_features)
-
-    for name, v in vocab:
-        # Hack. Can't pickle defaultdict :(
-        # bp: this isn't true, you can pickle a defaultdict if the callable
-        # is defined at the top level of the module. You can't pickle lambdas.
-        v.stoi = defaultdict(lambda: 0, v.stoi)
-        fields[name].vocab = v
-    return fields
-
-
 def merge_vocabs(vocabs, vocab_size=None):
     """
     Merge individual vocabularies (assumed to be generated from disjoint
@@ -254,8 +226,7 @@ def collect_feature_vocabs(fields, side):
         on the given side
     """
     # used in train_single.py so that the model can build correct-sized
-    # embedding matrices and in model_builder.py in load_test_model (for the
-    # same reason, but at translation time)
+    # embedding matrices
     assert side in ['src', 'tgt']
     feature_vocabs = []
     for j in count(1):
