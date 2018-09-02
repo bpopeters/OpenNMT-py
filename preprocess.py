@@ -96,11 +96,10 @@ def save_datasets(datasets, corpus_type, save_data):
 
 
 def build_vocab(train_dataset, opt):
-    fields = inputters.build_vocabs(
+    inputters.build_vocabs(
         train_dataset, opt.data_type, opt.share_vocab,
         opt.src_vocab, opt.src_vocab_size, opt.src_words_min_frequency,
         opt.tgt_vocab, opt.tgt_vocab_size, opt.tgt_words_min_frequency)
-    return inputters.fields_to_vocab(fields)
 
 
 def main():
@@ -121,11 +120,11 @@ def main():
     logger.info("Building training data and vocabulary...")
 
     train_datasets = build_datasets('train', fields, opt)
-    vocab = build_vocab(train_datasets, opt)
+    build_vocab(train_datasets, opt)
+    torch.save(fields, opt.save_data + '.fields.pt')
 
     logger.info("Saving training data and vocabulary...")
     save_datasets(train_datasets, 'train', opt.save_data)
-    torch.save(vocab, opt.save_data + '.vocab.pt')
 
     logger.info("Building & saving validation data...")
     valid_datasets = build_datasets('valid', fields, opt)

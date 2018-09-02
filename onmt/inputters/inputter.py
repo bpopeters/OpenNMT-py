@@ -185,17 +185,6 @@ def vocab_to_fields(vocab, data_type="text"):
     return fields
 
 
-def fields_to_vocab(fields):
-    """
-    fields: a dict whose keys are strings and whose values are Field objects
-    returns: a list of 2-tuples whose first items are keys of the fields dict
-             and whose values are the vocabs of the corresponding Fields.
-    """
-    # this is used in model_saver.py and preprocess.py
-    return [(k, f.vocab) for k, f in fields.items()
-            if f is not None and 'vocab' in f.__dict__]
-
-
 def merge_vocabs(vocabs, vocab_size=None):
     """
     Merge individual vocabularies (assumed to be generated from disjoint
