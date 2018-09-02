@@ -1,6 +1,7 @@
 from __future__ import division
 import torch
 from onmt.translate import penalties
+from onmt.utils.misc import aeq
 
 
 class Beam(object):
@@ -23,21 +24,18 @@ class Beam(object):
                  min_length=0,
                  stepwise_penalty=False,
                  block_ngram_repeat=0,
-                 exclusion_tokens=set()):
+                 exclusion_tokens=frozenset()):
 
-        self.size = size
-        self.tt = torch.cuda if cuda else torch
+        device = 'cuda' if cuda else 'cpu'  # not sure if necessary
 
         # The score for each translation on the beam.
-        self.scores = self.tt.FloatTensor(size).zero_()
-        self.all_scores = []
+        self.scores = torch.zeros(size, device=device)
 
         # The backpointers at each time-step.
         self.prev_ks = []
 
         # The outputs at each time-step.
-        self.next_ys = [self.tt.LongTensor(size)
-                        .fill_(pad)]
+        self.next_ys = [torch.full((size,), pad, device=device).long()]
         self.next_ys[0][0] = bos
 
         # Has EOS topped the beam yet.
@@ -63,106 +61,107 @@ class Beam(object):
         self.block_ngram_repeat = block_ngram_repeat
         self.exclusion_tokens = exclusion_tokens
 
-    def get_current_state(self):
-        "Get the outputs for the current timestep."
+    @property
+    def width(self):
+        return len(self.next_ys[-1])
+
+    @property
+    def current_state(self):
         return self.next_ys[-1]
 
-    def get_current_origin(self):
-        "Get the backpointers for the current timestep."
+    @property
+    def backpointers(self):
         return self.prev_ks[-1]
 
-    def advance(self, word_probs, attn_out):
+    def advance(self, probs, attn_out):
         """
         Given prob over words for every last beam `wordLk` and attention
         `attn_out`: Compute and update the beam search.
 
         Parameters:
-
-        * `word_probs`- probs of advancing from the last step (K x words)
+        * `probs`- probs of advancing from the last step
+            (beam width x vocab size)
         * `attn_out`- attention at the last step
-
-        Returns: True if beam search is complete.
         """
-        num_words = word_probs.size(1)
+        probs_beam_width, vocab_size = probs.size()
+        aeq(probs_beam_width, self.width)
+
         if self.stepwise_penalty:
-            self.global_scorer.update_score(self, attn_out)
+            self.update_score(attn_out)
         # force the output to be longer than self.min_length
-        cur_len = len(self.next_ys)
-        if cur_len < self.min_length:
-            for k in range(len(word_probs)):
-                word_probs[k][self._eos] = -1e20
-        # Sum the previous scores.
-        if len(self.prev_ks) > 0:
-            beam_scores = word_probs + \
-                self.scores.unsqueeze(1).expand_as(word_probs)
-            # Don't let EOS have children.
-            for i in range(self.next_ys[-1].size(0)):
-                if self.next_ys[-1][i] == self._eos:
-                    beam_scores[i] = -1e20
+        if len(self.next_ys) < self.min_length:
+            probs[:, self._eos] = -1e20
 
-            # Block ngram repeats
-            if self.block_ngram_repeat > 0:
-                ngrams = []
-                le = len(self.next_ys)
-                for j in range(self.next_ys[-1].size(0)):
-                    hyp, _ = self.get_hyp(le - 1, j)
-                    ngrams = set()
-                    fail = False
-                    gram = []
-                    for i in range(le - 1):
-                        # Last n tokens, n = block_ngram_repeat
-                        gram = (gram +
-                                [hyp[i].item()])[-self.block_ngram_repeat:]
-                        # Skip the blocking if it is in the exclusion list
-                        if set(gram) & self.exclusion_tokens:
-                            continue
-                        if tuple(gram) in ngrams:
-                            fail = True
-                        ngrams.add(tuple(gram))
-                    if fail:
-                        beam_scores[j] = -10e20
-        else:
-            beam_scores = word_probs[0]
-        flat_beam_scores = beam_scores.view(-1)
-        best_scores, best_scores_id = flat_beam_scores.topk(self.size, 0,
-                                                            True, True)
+        # compute the beam
+        beam_scores = self._successors(probs) if self.prev_ks else probs[0]
 
-        self.all_scores.append(self.scores)
-        self.scores = best_scores
+        # prune the beam
+        self.scores, best_scores_id = beam_scores.topk(self.width, 0)
 
         # best_scores_id is flattened beam x word array, so calculate which
         # word and beam each score came from
-        prev_k = best_scores_id / num_words
+        prev_k = best_scores_id / vocab_size
         self.prev_ks.append(prev_k)
-        self.next_ys.append((best_scores_id - prev_k * num_words))
+        self.next_ys.append(best_scores_id - prev_k * vocab_size)
         self.attn.append(attn_out.index_select(0, prev_k))
-        self.global_scorer.update_global_state(self)
+        self.update_global_state()
 
-        for i in range(self.next_ys[-1].size(0)):
-            if self.next_ys[-1][i] == self._eos:
-                global_scores = self.global_scorer.score(self, self.scores)
-                s = global_scores[i]
-                self.finished.append((s, len(self.next_ys) - 1, i))
+        finished_sents = self.current_state == self._eos
+        if finished_sents.any():
+            indices = torch.arange(0, self.width, dtype=torch.long)
+            seq_len = len(self.next_ys) - 1
+
+            global_scores = self.compute_global_score()
+            finished_globals = global_scores.masked_select(finished_sents)
+            ix = indices.masked_select(finished_sents)
+            self.finished.extend((s, seq_len, i)
+                                 for s, i in zip(finished_globals, ix))
 
         # End condition is when top-of-beam is EOS and no global score.
-        if self.next_ys[-1][0] == self._eos:
-            self.all_scores.append(self.scores)
+        if self.current_state[0] == self._eos:
             self.eos_top = True
+
+    def _successors(self, word_probs):
+        beam_scores = word_probs + self.scores.unsqueeze(1)
+        # Don't let EOS have children.
+        beam_scores[self.current_state == self._eos] = -1e20
+
+        if self.block_ngram_repeat:
+            blocked_indices = self._find_ngram_repetitions()
+            beam_scores[blocked_indices] = -1e20
+
+        beam_scores = beam_scores.view(-1)
+        return beam_scores
+
+    def _find_ngram_repetitions(self):
+        n = self.block_ngram_repeat
+        le = len(self.next_ys)
+        indices = set()
+        for j in range(self.width):
+            hyp, _ = self.get_hyp(le - 1, j)
+            ngrams = set()
+            gram = tuple()
+            for i in range(le - 1):
+                gram = (gram + (hyp[i].item(),))[-n:]
+                # Skip the blocking if it is in the exclusion list
+                if any(tok in self.exclusion_tokens for tok in gram):
+                    continue
+                if gram in ngrams:
+                    indices.add(j)
+                ngrams.add(gram)
+        return list(indices)
 
     def done(self):
         return self.eos_top and len(self.finished) >= self.n_best
 
-    def sort_finished(self, minimum=None):
-        if minimum is not None:
-            i = 0
-            # Add from beam until we have minimum outputs.
-            while len(self.finished) < minimum:
-                global_scores = self.global_scorer.score(self, self.scores)
-                s = global_scores[i]
-                self.finished.append((s, len(self.next_ys) - 1, i))
-                i += 1
+    def sort_finished(self):
+        minimum = self.n_best
+        if len(self.finished) < minimum:
+            gs = self.compute_global_score()
+            self.finished.extend((gs[i], len(self.next_ys) - 1, i)
+                                 for i in range(minimum - len(self.finished)))
 
-        self.finished.sort(key=lambda a: -a[0])
+        self.finished.sort(reverse=True)
         scores = [sc for sc, _, _ in self.finished]
         ks = [(t, k) for _, t, k in self.finished]
         return scores, ks
@@ -172,11 +171,56 @@ class Beam(object):
         Walk back to construct the full hypothesis.
         """
         hyp, attn = [], []
-        for j in range(len(self.prev_ks[:timestep]) - 1, -1, -1):
+        for j in range(timestep - 1, -1, -1):
             hyp.append(self.next_ys[j + 1][k])
             attn.append(self.attn[j][k])
             k = self.prev_ks[j][k]
         return hyp[::-1], torch.stack(attn[::-1])
+
+    def update_score(self, attn):
+        if "prev_penalty" in self.global_state:
+            self.scores.add_(self.global_state["prev_penalty"])
+            penalty = self.global_scorer.cov_penalty(
+                self, self.global_state["coverage"] + attn,
+                self.global_scorer.beta
+            )
+            self.scores.sub_(penalty)
+
+    def update_global_state(self):
+        "Keeps the coverage vector as sum of attentions"
+        if len(self.prev_ks) == 1:
+            self.global_state["prev_penalty"] = torch.zeros_like(self.scores)
+            self.global_state["coverage"] = self.attn[-1]
+            self.cov_total = self.attn[-1].sum(1)  # TODO: define elsewhere
+        else:
+            self.cov_total += torch.min(self.attn[-1],
+                                        self.global_state['coverage']).sum(1)
+            self.global_state["coverage"] = self.global_state["coverage"] \
+                .index_select(0, self.backpointers).add(self.attn[-1])
+
+            prev_penalty = self.global_scorer.cov_penalty(
+                self.scores, self.global_state["coverage"]
+            )
+            self.global_state["prev_penalty"] = prev_penalty
+
+    def compute_global_score(self):
+        return self.global_scorer.score(
+            self.scores, self.next_ys,
+            self.global_state["coverage"],
+            self.stepwise_penalty)
+
+    def to_dict(self):
+        ret = {"predictions": [], "scores": [], "attention": []}
+        scores, ks = self.sort_finished()
+        hyps, attn = [], []
+        for times, k in ks[:self.n_best]:
+            hyp, att = self.get_hyp(times, k)
+            hyps.append(hyp)
+            attn.append(att)
+        ret["predictions"].append(hyps)
+        ret["scores"].append(scores)
+        ret["attention"].append(attn)
+        return ret
 
 
 class GNMTGlobalScorer(object):
@@ -192,52 +236,21 @@ class GNMTGlobalScorer(object):
     def __init__(self, alpha, beta, cov_penalty, length_penalty):
         self.alpha = alpha
         self.beta = beta
-        penalty_builder = penalties.PenaltyBuilder(cov_penalty,
-                                                   length_penalty)
-        # Term will be subtracted from probability
-        self.cov_penalty = penalty_builder.coverage_penalty()
-        # Probability will be divided by this
-        self.length_penalty = penalty_builder.length_penalty()
+        self._cov_func = penalties.coverage_penalty(cov_penalty)
+        self._len_func = penalties.length_penalty(length_penalty)
 
-    def score(self, beam, logprobs):
+    def score(self, scores, next_ys, cov, stepwise_penalty=False):
         """
         Rescores a prediction based on penalty functions
         """
-        normalized_probs = self.length_penalty(beam,
-                                               logprobs,
-                                               self.alpha)
-        if not beam.stepwise_penalty:
-            penalty = self.cov_penalty(beam,
-                                       beam.global_state["coverage"],
-                                       self.beta)
+        normalized_probs = self.length_penalty(scores, next_ys)
+        if not stepwise_penalty:
+            penalty = self.cov_penalty(scores, cov)
             normalized_probs -= penalty
-
         return normalized_probs
 
-    def update_score(self, beam, attn):
-        """
-        Function to update scores of a Beam that is not finished
-        """
-        if "prev_penalty" in beam.global_state.keys():
-            beam.scores.add_(beam.global_state["prev_penalty"])
-            penalty = self.cov_penalty(beam,
-                                       beam.global_state["coverage"] + attn,
-                                       self.beta)
-            beam.scores.sub_(penalty)
+    def cov_penalty(self, scores, coverage):
+        return self._cov_func(scores, coverage, self.beta)
 
-    def update_global_state(self, beam):
-        "Keeps the coverage vector as sum of attentions"
-        if len(beam.prev_ks) == 1:
-            beam.global_state["prev_penalty"] = beam.scores.clone().fill_(0.0)
-            beam.global_state["coverage"] = beam.attn[-1]
-            self.cov_total = beam.attn[-1].sum(1)
-        else:
-            self.cov_total += torch.min(beam.attn[-1],
-                                        beam.global_state['coverage']).sum(1)
-            beam.global_state["coverage"] = beam.global_state["coverage"] \
-                .index_select(0, beam.prev_ks[-1]).add(beam.attn[-1])
-
-            prev_penalty = self.cov_penalty(beam,
-                                            beam.global_state["coverage"],
-                                            self.beta)
-            beam.global_state["prev_penalty"] = prev_penalty
+    def length_penalty(self, scores, next_ys):
+        return self._len_func(scores, next_ys, self.alpha)
