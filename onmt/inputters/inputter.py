@@ -301,14 +301,15 @@ def build_dataset(fields, data_type,
     return dataset
 
 
-def build_vocabs(datasets, data_type, share_vocab,
-                 src_vocab_path, src_vocab_size, src_words_min_frequency,
-                 tgt_vocab_path, tgt_vocab_size, tgt_words_min_frequency):
+def build_vocabs(fields, datasets, share_vocab,
+                 src_vocab_path, src_vocab_size, src_words_min_freq,
+                 tgt_vocab_path, tgt_vocab_size, tgt_words_min_freq):
     """
     Args:
+        fields (dict): dict whose keys are strings representing the data they
+                are applied to and whose values are lists of (fieldname, field)
+                tuples.
         datasets: a list of train dataset objects.
-        fields (dict): dict whose keys are strings and values are Fields
-        data_type: "text", "img" or "audio"?
         share_vocab(bool): share source and target vocabulary?
         src_vocab_path(string): Path to src vocabulary file.
         src_vocab_size(int): size of the source vocabulary.
@@ -319,54 +320,37 @@ def build_vocabs(datasets, data_type, share_vocab,
         tgt_words_min_frequency(int): the minimum frequency needed to
                 include a target word in the vocabulary.
 
-    Returns:
-        fields, but after .build_vocab has been called for each field
+    Builds the vocab for each dataset that requires it
     """
     # used only in preprocess.py
 
-    src_vocab = _load_vocabulary(src_vocab_path, tag="source")
-    tgt_vocab = _load_vocabulary(tgt_vocab_path, tag="target")
+    for name, field_list in fields.items():
+        for n, f in field_list:
+            if f.use_vocab:
+                voc_size, min_freq, pre_vocab = None, 1, None
+                if n == 'src':
+                    voc_size = src_vocab_size
+                    min_freq = src_words_min_freq
+                    pre_vocab = _load_vocabulary(src_vocab_path, tag="source")
+                elif n == 'tgt':
+                    voc_size = tgt_vocab_size
+                    min_freq = tgt_words_min_freq
+                    pre_vocab = _load_vocabulary(tgt_vocab_path, tag="target")
 
-    fields = datasets[0].fields
-    for name, field in fields.items():
-        if field.use_vocab:
-            if name == 'src':
-                field.build_vocab(
-                    *datasets, max_size=src_vocab_size,
-                    min_freq=src_words_min_frequency)
-                if src_vocab is not None:
-                    field.vocab = _filtered_vocab(field.vocab, src_vocab)
-            elif name == 'tgt':
-                field.build_vocab(
-                    *datasets, max_size=tgt_vocab_size,
-                    min_freq=tgt_words_min_frequency)
-                if tgt_vocab is not None:
-                    field.vocab = _filtered_vocab(field.vocab, tgt_vocab)
-            else:
-                field.build_vocab(*datasets)
+                f.build_vocab(*datasets, max_size=voc_size, min_freq=min_freq)
+                if pre_vocab is not None:
+                    f.vocab = _filtered_vocab(f.vocab, pre_vocab)
+                logger.info(" * {} vocab size: {}.".format(n, len(f.vocab)))
 
-    if data_type == 'text':
-        logger.info(" * src vocab size: %d." % len(fields["src"].vocab))
-    logger.info(" * tgt vocab size: %d." % len(fields["tgt"].vocab))
-
-    src_feats = sorted(name for name in fields if "src_feat_" in name)
-    tgt_feats = sorted(name for name in fields if "tgt_feat_" in name)
-    for i, feat in enumerate(src_feats, 1):
-        logger.info(" * %s vocab size: %d." % (feat, len(fields[feat].vocab)))
-    for i, feat in enumerate(tgt_feats, 1):
-        logger.info(" * %s vocab size: %d." % (feat, len(fields[feat].vocab)))
-
-    if data_type == 'text' and share_vocab:
+    if share_vocab:
         # Merge the input and output vocabularies.
         # `tgt_vocab_size` is ignored when sharing vocabularies
         logger.info(" * merging src and tgt vocab...")
         merged_vocab = merge_vocabs(
-            [fields["src"].vocab, fields["tgt"].vocab],
+            [fields["src"][0][1].vocab, fields["tgt"][0][1].vocab],
             vocab_size=src_vocab_size)
-        fields["src"].vocab = merged_vocab
-        fields["tgt"].vocab = merged_vocab
-
-    return fields
+        fields["src"][0][1].vocab = merged_vocab
+        fields["tgt"][0][1].vocab = merged_vocab
 
 
 def _filtered_vocab(vocab, wordset):
