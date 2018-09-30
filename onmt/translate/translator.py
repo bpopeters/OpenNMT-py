@@ -392,6 +392,7 @@ class Translator(object):
 
         for step in range(max_length):
             decoder_input = alive_seq[:, -1].view(1, -1, 1)
+            print(vocab.itos[decoder_input.item()])
 
             # Decoder forward.
             dec_out, dec_states, attn = self.model.decoder(
@@ -403,6 +404,11 @@ class Translator(object):
 
             # Generator forward.
             log_probs = self.model.generator.forward(dec_out.squeeze(0))
+            probs = torch.exp(log_probs)
+            supported = probs > 0
+            supported_indices = supported.squeeze().nonzero().squeeze(1)
+            print(' '.join(vocab.itos[i] for i in supported_indices))
+            print(' '.join(map(str, probs[supported].tolist())))
             vocab_size = log_probs.size(-1)
 
             if step < min_length:
@@ -418,6 +424,8 @@ class Translator(object):
             curr_scores = log_probs / length_penalty
             curr_scores = curr_scores.reshape(-1, beam_size * vocab_size)
             topk_scores, topk_ids = curr_scores.topk(beam_size, dim=-1)
+            # topk_ids = torch.multinomial(probs, beam_size)
+            # topk_scores = log_probs[0, topk_ids.item()].view(1, 1)
 
             # Recover log probs.
             topk_log_probs = topk_scores * length_penalty
@@ -501,6 +509,7 @@ class Translator(object):
             memory_lengths = memory_lengths.index_select(0, select_indices)
             dec_states.map_batch_fn(
                 lambda state, dim: state.index_select(dim, select_indices))
+        print()
 
         return results
 
