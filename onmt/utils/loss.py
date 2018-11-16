@@ -186,7 +186,10 @@ class LossComputeBase(nn.Module):
         non_padding = target.ne(self.padding_idx)
         num_correct = pred.eq(target).masked_select(non_padding).sum().item()
         num_non_padding = non_padding.sum().item()
-        return onmt.utils.Statistics(loss.item(), num_non_padding, num_correct)
+        results = {'loss': loss.item(),
+                   'n_words': num_non_padding,
+                   'n_correct': num_correct}
+        return onmt.utils.Statistics(**results)
 
     def _bottle(self, _v):
         return _v.view(-1, _v.size(2))
