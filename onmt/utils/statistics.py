@@ -3,6 +3,7 @@ from __future__ import division
 import time
 import math
 import sys
+from itertools import chain
 
 from torch.distributed import get_rank
 from onmt.utils.distributed import all_gather_list
@@ -13,16 +14,25 @@ def accuracy(n_correct, n_words, **kwargs):
     return 100 * (n_correct / n_words)
 
 
-def cross_entropy(loss, n_words, **kwargs):
+def avg_loss(loss, n_words, **kwargs):
     return loss / n_words
 
 
 def perplexity(loss, n_words, **kwargs):
-    return math.exp(min(cross_entropy(loss, n_words), 100))
+    return math.exp(min(avg_loss(loss, n_words), 100))
 
 
-def avg_support(n_supported, n_words, **kwargs):
-    return n_supported / n_words
+def avg_support(support_size, n_words, **kwargs):
+    return support_size / n_words
+
+
+def gold_support_rate(n_supported, n_words, **kwargs):
+    return 100 * n_supported / n_words
+
+
+def precision(n_correct, support_size, **kwargs):
+    # kinda silly
+    return 100 * n_correct / support_size
 
 
 class Statistics(object):
@@ -34,6 +44,22 @@ class Statistics(object):
         self.stats['n_correct'] = n_correct
         self.stats['n_src_words'] = 0
         self.start_time = time.time()
+
+        """
+        self.train_log_stats = [
+            ('acc', accuracy), ('ppl', perplexity), ('xent', avg_loss)
+        ]
+        """
+        self.train_log_stats = [
+            ('acc', accuracy), ('loss', avg_loss),
+            ('supp. size', avg_support), ('gold supp. rate', gold_support_rate)
+        ]
+
+        self.report_metrics = [
+            ('loss', avg_loss), ('accuracy', accuracy),
+            ('support size', avg_support),
+            ('gold support rate', gold_support_rate)
+        ]
 
     @property
     def loss(self):
@@ -137,30 +163,31 @@ class Statistics(object):
            start (int): start time of step.
         """
         t = self.elapsed_time()
-        acc = accuracy(**self.stats)
-        ppl = perplexity(**self.stats)
-        xent = cross_entropy(**self.stats)
-        support = avg_support(**self.stats) if 'n_supported' in self.stats \
-            else None
-        out = "Step %2d/%5d; acc: %6.2f; ppl: %5.2f; xent: %4.2f; lr: %7.5f; "
-        metrics = out % (step, num_steps, acc, ppl, xent, learning_rate)
-        if support is not None:
-            metrics += "supp: {:.2f} ; ".format(support)
-        time_metrics = "%3.0f/%3.0f tok/s; %6.0f sec" % \
-            (self.n_src_words / (t + 1e-5), self.n_words / (t + 1e-5),
-             time.time() - start)
-        logger.info(metrics + time_metrics)
+        step_count = ["Step %2d/%5d" % (step, num_steps)]
+        lr = ["lr: %7.5f" % learning_rate]
+        metrics = [name + ": {:.2f}".format(m_func(**self.stats))
+                   for name, m_func in self.train_log_stats]
+        time_metrics = ["%3.0f/%3.0f tok/s; %6.0f sec" %
+                        (self.n_src_words / (t + 1e-5),
+                         self.n_words / (t + 1e-5),
+                         time.time() - start)]
+
+        train_log = "; ".join(chain(step_count, metrics, lr, time_metrics))
+
+        logger.info(train_log)
         sys.stdout.flush()
 
     def report(self, dataset):
-        logger.info(dataset + ' perplexity: %g' % perplexity(**self.stats))
-        logger.info(dataset + ' accuracy: %g' % accuracy(**self.stats))
+        template = dataset + ' {}: {:.3f}'  # not the same as %g
+        for metric, m_func in self.report_metrics:
+            logger.info(template.format(metric, m_func(**self.stats)))
 
     def log_tensorboard(self, prefix, writer, learning_rate, step):
         """ display statistics to tensorboard """
+        # todo: make this flexible
         t = self.elapsed_time()
-        writer.add_scalar(prefix + "/xent", self.xent(), step)
-        writer.add_scalar(prefix + "/ppl", self.ppl(), step)
+        writer.add_scalar(prefix + "/xent", avg_loss(**self.stats), step)
+        writer.add_scalar(prefix + "/ppl", perplexity(**self.stats), step)
         writer.add_scalar(prefix + "/accuracy", self.accuracy(), step)
         writer.add_scalar(prefix + "/tgtper", self.n_words / t, step)
         writer.add_scalar(prefix + "/lr", learning_rate, step)

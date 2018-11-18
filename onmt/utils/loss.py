@@ -192,7 +192,10 @@ class LossComputeBase(nn.Module):
         if isinstance(self.criterion, SparsemaxLoss):
             with torch.no_grad():
                 probs = sparsemax(scores.clone(), 1)
-            n_supported = (probs[non_padding] > 0).sum().item()
+            support_size = (probs[non_padding] > 0).sum().item()  # bad name...
+            results['support_size'] = support_size
+            gold_probs = probs.gather(1, target.unsqueeze(1)).squeeze()
+            n_supported = (gold_probs[non_padding] > 0).sum().item()
             results['n_supported'] = n_supported
 
         return onmt.utils.Statistics(**results)
