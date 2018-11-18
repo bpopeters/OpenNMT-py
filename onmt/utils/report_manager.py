@@ -120,16 +120,13 @@ class ReportMgr(ReportMgrBase):
         """
         See base class method `ReportMgrBase.report_training`.
         """
-        report_stats.output(step, num_steps,
-                            learning_rate, self.start_time)
+        report_stats.output(step, num_steps, learning_rate, self.start_time)
 
         # Log the progress using the number of batches on the x-axis.
-        self.maybe_log_tensorboard(report_stats,
-                                   "progress",
-                                   learning_rate,
-                                   self.progress_step)
+        self.maybe_log_tensorboard(
+            report_stats, "progress", learning_rate, self.progress_step
+        )
         report_stats = onmt.utils.Statistics()
-
         return report_stats
 
     def _report_step(self, lr, step, train_stats=None, valid_stats=None):
@@ -137,19 +134,9 @@ class ReportMgr(ReportMgrBase):
         See base class method `ReportMgrBase.report_step`.
         """
         if train_stats is not None:
-            self.log('Train perplexity: %g' % train_stats.ppl())
-            self.log('Train accuracy: %g' % train_stats.accuracy())
-
-            self.maybe_log_tensorboard(train_stats,
-                                       "train",
-                                       lr,
-                                       step)
+            train_stats.report('Train')
+            self.maybe_log_tensorboard(train_stats, "train", lr, step)
 
         if valid_stats is not None:
-            self.log('Validation perplexity: %g' % valid_stats.ppl())
-            self.log('Validation accuracy: %g' % valid_stats.accuracy())
-
-            self.maybe_log_tensorboard(valid_stats,
-                                       "valid",
-                                       lr,
-                                       step)
+            valid_stats.report('Validation')
+            self.maybe_log_tensorboard(valid_stats, "valid", lr, step)

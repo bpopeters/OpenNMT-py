@@ -9,15 +9,23 @@ from onmt.utils.distributed import all_gather_list
 from onmt.utils.logging import logger
 
 
-class Statistics(object):
-    """
-    Accumulator for loss statistics.
-    Currently calculates:
+def accuracy(n_correct, n_words, **kwargs):
+    return 100 * (n_correct / n_words)
 
-    * accuracy
-    * perplexity
-    * elapsed time
-    """
+
+def cross_entropy(loss, n_words, **kwargs):
+    return loss / n_words
+
+
+def perplexity(loss, n_words, **kwargs):
+    return math.exp(min(cross_entropy(loss, n_words), 100))
+
+
+def avg_support(n_supported, n_words, **kwargs):
+    return n_supported / n_words
+
+
+class Statistics(object):
 
     def __init__(self, loss=0, n_words=0, n_correct=0, **kwargs):
         self.stats = kwargs
@@ -87,8 +95,6 @@ class Statistics(object):
                 our_stats[i].update(stat, update_n_src_words=True)
         return our_stats
 
-    # the job here is essentially to merge two dictionaries with
-    # identical keys
     def update(self, other, update_n_src_words=False):
         """
         Update statistics by suming values with another `Statistics` object
@@ -97,14 +103,13 @@ class Statistics(object):
             other: another statistic object
             update_n_src_words(bool): whether to update (sum) `n_src_words`
                 or not
-
         """
-        #assert self.stats.keys() == other.stats.keys()  # actually correct?
         for k, v in other.stats.items():
             if k in self.stats:
                 if k != 'n_src_words' or update_n_src_words:
                     self.stats[k] += v
             else:
+                # I think this is not intended behavior with update_n_src_words
                 self.stats[k] = v
 
     def accuracy(self):
@@ -124,31 +129,32 @@ class Statistics(object):
         return time.time() - self.start_time
 
     def output(self, step, num_steps, learning_rate, start):
-        """Write out statistics to stdout.
+        """Log statistics
 
         Args:
            step (int): current step
-           n_batch (int): total batches
+           num_steps (int): total steps
            start (int): start time of step.
         """
         t = self.elapsed_time()
-        acc = self.accuracy()
-        # wouldn't it be better if I could assemble this dynamically?
-        """
-        metrics = ["Step", "acc", "ppl", "xent", "lr"]
-        "; ".join([])
-        report_format = "Step {step}/{num_steps}; acc: {acc}; ppl: {ppl}; " +
-                        "xent: %4.2f; lr: %7.5f; %3.0f/%3.0f tok/s; %6.0f sec"
-        """
-        metrics = "Step %2d/%5d; acc: %6.2f; ppl: %5.2f; xent: %4.2f; lr: %7.5f; " % \
-            (step, num_steps, self.accuracy(), self.ppl(), self.xent(), learning_rate)
-        if 'n_supported' in self.stats:
-            metrics += "supp: {:.2f} ; ".format(self.stats['n_supported'] / self.n_words)
+        acc = accuracy(**self.stats)
+        ppl = perplexity(**self.stats)
+        xent = cross_entropy(**self.stats)
+        support = avg_support(**self.stats) if 'n_supported' in self.stats \
+            else None
+        out = "Step %2d/%5d; acc: %6.2f; ppl: %5.2f; xent: %4.2f; lr: %7.5f; "
+        metrics = out % (step, num_steps, acc, ppl, xent, learning_rate)
+        if support is not None:
+            metrics += "supp: {:.2f} ; ".format(support)
         time_metrics = "%3.0f/%3.0f tok/s; %6.0f sec" % \
             (self.n_src_words / (t + 1e-5), self.n_words / (t + 1e-5),
              time.time() - start)
         logger.info(metrics + time_metrics)
         sys.stdout.flush()
+
+    def report(self, dataset):
+        logger.info(dataset + ' perplexity: %g' % perplexity(**self.stats))
+        logger.info(dataset + ' accuracy: %g' % accuracy(**self.stats))
 
     def log_tensorboard(self, prefix, writer, learning_rate, step):
         """ display statistics to tensorboard """
