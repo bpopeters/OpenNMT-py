@@ -10,7 +10,7 @@ import torch.nn.functional as F
 import onmt
 import onmt.inputters as inputters
 from onmt.modules.sparse_losses import SparsemaxLoss
-from onmt.modules.sparse_activations import LogSparsemax
+from onmt.modules.sparse_activations import LogSparsemax, sparsemax
 
 
 def build_loss_compute(model, tgt_vocab, opt, train=True):
@@ -189,6 +189,12 @@ class LossComputeBase(nn.Module):
         results = {'loss': loss.item(),
                    'n_words': num_non_padding,
                    'n_correct': num_correct}
+        if isinstance(self.criterion, SparsemaxLoss):
+            with torch.no_grad():
+                probs = sparsemax(scores.clone(), 1)
+            n_supported = (probs[non_padding] > 0).sum().item()
+            results['n_supported'] = n_supported
+
         return onmt.utils.Statistics(**results)
 
     def _bottle(self, _v):

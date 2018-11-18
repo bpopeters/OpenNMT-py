@@ -20,11 +20,31 @@ class Statistics(object):
     """
 
     def __init__(self, loss=0, n_words=0, n_correct=0, **kwargs):
-        self.loss = loss
-        self.n_words = n_words
-        self.n_correct = n_correct
-        self.n_src_words = 0
+        self.stats = kwargs
+        self.stats['loss'] = loss
+        self.stats['n_words'] = n_words
+        self.stats['n_correct'] = n_correct
+        self.stats['n_src_words'] = 0
         self.start_time = time.time()
+
+    @property
+    def loss(self):
+        return self.stats['loss']
+
+    @property
+    def n_words(self):
+        return self.stats['n_words']
+
+    @property
+    def n_correct(self):
+        return self.stats['n_correct']
+
+    @property
+    def n_src_words(self):
+        return self.stats['n_src_words']
+
+    def add_src_lengths(self, src_lengths):
+        self.stats['n_src_words'] += src_lengths
 
     @staticmethod
     def all_gather_stats(stat, max_size=4096):
@@ -67,22 +87,25 @@ class Statistics(object):
                 our_stats[i].update(stat, update_n_src_words=True)
         return our_stats
 
-    def update(self, stat, update_n_src_words=False):
+    # the job here is essentially to merge two dictionaries with
+    # identical keys
+    def update(self, other, update_n_src_words=False):
         """
         Update statistics by suming values with another `Statistics` object
 
         Args:
-            stat: another statistic object
+            other: another statistic object
             update_n_src_words(bool): whether to update (sum) `n_src_words`
                 or not
 
         """
-        self.loss += stat.loss
-        self.n_words += stat.n_words
-        self.n_correct += stat.n_correct
-
-        if update_n_src_words:
-            self.n_src_words += stat.n_src_words
+        #assert self.stats.keys() == other.stats.keys()  # actually correct?
+        for k, v in other.stats.items():
+            if k in self.stats:
+                if k != 'n_src_words' or update_n_src_words:
+                    self.stats[k] += v
+            else:
+                self.stats[k] = v
 
     def accuracy(self):
         """ compute accuracy """
@@ -109,17 +132,22 @@ class Statistics(object):
            start (int): start time of step.
         """
         t = self.elapsed_time()
-        logger.info(
-            ("Step %2d/%5d; acc: %6.2f; ppl: %5.2f; xent: %4.2f; " +
-             "lr: %7.5f; %3.0f/%3.0f tok/s; %6.0f sec")
-            % (step, num_steps,
-               self.accuracy(),
-               self.ppl(),
-               self.xent(),
-               learning_rate,
-               self.n_src_words / (t + 1e-5),
-               self.n_words / (t + 1e-5),
-               time.time() - start))
+        acc = self.accuracy()
+        # wouldn't it be better if I could assemble this dynamically?
+        """
+        metrics = ["Step", "acc", "ppl", "xent", "lr"]
+        "; ".join([])
+        report_format = "Step {step}/{num_steps}; acc: {acc}; ppl: {ppl}; " +
+                        "xent: %4.2f; lr: %7.5f; %3.0f/%3.0f tok/s; %6.0f sec"
+        """
+        metrics = "Step %2d/%5d; acc: %6.2f; ppl: %5.2f; xent: %4.2f; lr: %7.5f; " % \
+            (step, num_steps, self.accuracy(), self.ppl(), self.xent(), learning_rate)
+        if 'n_supported' in self.stats:
+            metrics += "supp: {:.2f} ; ".format(self.stats['n_supported'] / self.n_words)
+        time_metrics = "%3.0f/%3.0f tok/s; %6.0f sec" % \
+            (self.n_src_words / (t + 1e-5), self.n_words / (t + 1e-5),
+             time.time() - start)
+        logger.info(metrics + time_metrics)
         sys.stdout.flush()
 
     def log_tensorboard(self, prefix, writer, learning_rate, step):
