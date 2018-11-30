@@ -61,22 +61,6 @@ class Statistics(object):
             ('gold support rate', gold_support_rate)
         ]
 
-    @property
-    def loss(self):
-        return self.stats['loss']
-
-    @property
-    def n_words(self):
-        return self.stats['n_words']
-
-    @property
-    def n_correct(self):
-        return self.stats['n_correct']
-
-    @property
-    def n_src_words(self):
-        return self.stats['n_src_words']
-
     def add_src_lengths(self, src_lengths):
         self.stats['n_src_words'] += src_lengths
 
@@ -138,18 +122,6 @@ class Statistics(object):
                 # I think this is not intended behavior with update_n_src_words
                 self.stats[k] = v
 
-    def accuracy(self):
-        """ compute accuracy """
-        return 100 * (self.n_correct / self.n_words)
-
-    def xent(self):
-        """ compute cross entropy """
-        return self.loss / self.n_words
-
-    def ppl(self):
-        """ compute perplexity """
-        return math.exp(min(self.loss / self.n_words, 100))
-
     def elapsed_time(self):
         """ compute elapsed time """
         return time.time() - self.start_time
@@ -168,8 +140,8 @@ class Statistics(object):
         metrics = [name + ": {:.2f}".format(m_func(**self.stats))
                    for name, m_func in self.train_log_stats]
         time_metrics = ["%3.0f/%3.0f tok/s; %6.0f sec" %
-                        (self.n_src_words / (t + 1e-5),
-                         self.n_words / (t + 1e-5),
+                        (self.stats['n_src_words'] / (t + 1e-5),
+                         self.stats['n_words'] / (t + 1e-5),
                          time.time() - start)]
 
         train_log = "; ".join(chain(step_count, metrics, lr, time_metrics))
@@ -188,6 +160,6 @@ class Statistics(object):
         t = self.elapsed_time()
         writer.add_scalar(prefix + "/xent", avg_loss(**self.stats), step)
         writer.add_scalar(prefix + "/ppl", perplexity(**self.stats), step)
-        writer.add_scalar(prefix + "/accuracy", self.accuracy(), step)
-        writer.add_scalar(prefix + "/tgtper", self.n_words / t, step)
+        writer.add_scalar(prefix + "/accuracy", accuracy(**self.stats), step)
+        writer.add_scalar(prefix + "/tgtper", self.stats['n_words'] / t, step)
         writer.add_scalar(prefix + "/lr", learning_rate, step)
