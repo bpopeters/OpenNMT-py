@@ -35,14 +35,18 @@ def precision(n_correct, support_size, **kwargs):
     return 100 * n_correct / support_size
 
 
+def beam_entropy(beam_entropy_sum, n_words, **kwargs):
+    return beam_entropy_sum / n_words
+
+
 class Statistics(object):
 
     def __init__(self, loss=0, n_words=0, n_correct=0, **kwargs):
-        self._stats = kwargs
-        self._stats['loss'] = loss
-        self._stats['n_words'] = n_words
-        self._stats['n_correct'] = n_correct
-        self._stats['n_src_words'] = 0
+        self.stats = kwargs
+        self.stats['loss'] = loss
+        self.stats['n_words'] = n_words
+        self.stats['n_correct'] = n_correct
+        self.stats['n_src_words'] = 0
         self.start_time = time.time()
 
         # Things to report every however many steps on the training set, and
@@ -54,7 +58,9 @@ class Statistics(object):
         """
         self._train_log_stats = [
             ('acc', accuracy), ('loss', avg_loss),
-            ('supp. size', avg_support), ('gold supp. rate', gold_support_rate)
+            ('supp. size', avg_support),
+            ('gold supp. rate', gold_support_rate),
+            ('avg beam entropy', beam_entropy)
         ]
 
         # Things to report for the validation set when it is time to
@@ -62,11 +68,12 @@ class Statistics(object):
         self._report_metrics = [
             ('loss', avg_loss), ('accuracy', accuracy),
             ('support size', avg_support),
-            ('gold support rate', gold_support_rate)
+            ('gold support rate', gold_support_rate),
+            ('avg beam entropy', beam_entropy)
         ]
 
     def add_src_lengths(self, src_lengths):
-        self._stats['n_src_words'] += src_lengths
+        self.stats['n_src_words'] += src_lengths
 
     @staticmethod
     def all_gather_stats(stat, max_size=4096):
@@ -119,12 +126,12 @@ class Statistics(object):
                 or not
         """
         for k, v in other.stats.items():
-            if k in self._stats:
+            if k in self.stats:
                 if k != 'n_src_words' or update_n_src_words:
-                    self._stats[k] += v
+                    self.stats[k] += v
             else:
                 # I think this is not intended behavior with update_n_src_words
-                self._stats[k] = v
+                self.stats[k] = v
 
     def elapsed_time(self):
         """ compute elapsed time """
@@ -141,11 +148,11 @@ class Statistics(object):
         t = self.elapsed_time()
         step_count = ["Step %2d/%5d" % (step, num_steps)]
         lr = ["lr: %7.5f" % learning_rate]
-        metrics = [name + ": {:.2f}".format(m_func(**self._stats))
+        metrics = [name + ": {:.2f}".format(m_func(**self.stats))
                    for name, m_func in self._train_log_stats]
         time_metrics = ["%3.0f/%3.0f tok/s; %6.0f sec" %
-                        (self._stats['n_src_words'] / (t + 1e-5),
-                         self._stats['n_words'] / (t + 1e-5),
+                        (self.stats['n_src_words'] / (t + 1e-5),
+                         self.stats['n_words'] / (t + 1e-5),
                          time.time() - start)]
 
         train_log = "; ".join(chain(step_count, metrics, lr, time_metrics))
@@ -156,14 +163,14 @@ class Statistics(object):
     def report(self, dataset):
         template = dataset + ' {}: {:.3f}'  # not the same as %g
         for metric, m_func in self._report_metrics:
-            logger.info(template.format(metric, m_func(**self._stats)))
+            logger.info(template.format(metric, m_func(**self.stats)))
 
     def log_tensorboard(self, prefix, writer, learning_rate, step):
         """ display statistics to tensorboard """
         # todo: make this flexible
         t = self.elapsed_time()
-        writer.add_scalar(prefix + "/xent", avg_loss(**self._stats), step)
-        writer.add_scalar(prefix + "/ppl", perplexity(**self._stats), step)
-        writer.add_scalar(prefix + "/accuracy", accuracy(**self._stats), step)
-        writer.add_scalar(prefix + "/tgtper", self._stats['n_words'] / t, step)
+        writer.add_scalar(prefix + "/xent", avg_loss(**self.stats), step)
+        writer.add_scalar(prefix + "/ppl", perplexity(**self.stats), step)
+        writer.add_scalar(prefix + "/accuracy", accuracy(**self.stats), step)
+        writer.add_scalar(prefix + "/tgtper", self.stats['n_words'] / t, step)
         writer.add_scalar(prefix + "/lr", learning_rate, step)
