@@ -3,11 +3,12 @@
 from __future__ import print_function
 import sys
 import os
-import argparse
+import configargparse
 import time
 import json
 import threading
 import re
+import traceback
 
 import torch
 import onmt.opts
@@ -180,9 +181,17 @@ class ServerModel:
         self.unload_timer = None
         self.user_opt = opt
         self.tokenizer = None
-        self.logger = init_logger(self.opt.log_file)
+
+        if len(self.opt.log_file) > 0:
+            log_file = os.path.join(model_root, self.opt.log_file)
+        else:
+            log_file = None
+        self.logger = init_logger(log_file=log_file,
+                                  log_file_level=self.opt.log_file_level)
+
         self.loading_lock = threading.Event()
         self.loading_lock.set()
+        self.running_lock = threading.Semaphore(value=1)
 
         if load:
             self.load()
@@ -197,7 +206,7 @@ class ServerModel:
         """
         prec_argv = sys.argv
         sys.argv = sys.argv[:1]
-        parser = argparse.ArgumentParser()
+        parser = configargparse.ArgumentParser()
         onmt.opts.translate_opts(parser)
 
         models = opt['models']
@@ -295,8 +304,13 @@ class ServerModel:
         """
         self.stop_unload_timer()
 
+        if not self.running_lock.acquire(blocking=True, timeout=120):
+            raise ServerModelError("Model %d running lock timeout"
+                                   % self.model_id)
+
         timer = Timer()
         timer.start()
+
         self.logger.info("Running translation using %d" % self.model_id)
 
         if not self.loading_lock.is_set():
@@ -349,8 +363,16 @@ class ServerModel:
                 scores, predictions = self.translator.translate(
                     src_data_iter=texts_to_translate,
                     batch_size=self.opt.batch_size)
-            except RuntimeError as e:
-                raise ServerModelError("Runtime Error: %s" % str(e))
+            except (RuntimeError, Exception) as e:
+                err = "Error: %s" % str(e)
+                self.logger.error(err)
+                self.logger.error("repr(text_to_translate): "
+                                  + repr(texts_to_translate))
+                self.logger.error("model: #%s" % self.model_id)
+                self.logger.error("model opt: " + str(self.opt.__dict__))
+                self.logger.error(traceback.format_exc())
+
+                raise ServerModelError(err)
 
         timer.tick(name="translation")
         self.logger.info("""Using model #%d\t%d inputs
@@ -378,7 +400,7 @@ class ServerModel:
                    for items in zip(head_spaces, results, tail_spaces)]
 
         self.logger.info("Translation Results: %d", len(results))
-
+        self.running_lock.release()
         return results, scores, self.opt.n_best, timer.times
 
     def do_timeout(self):

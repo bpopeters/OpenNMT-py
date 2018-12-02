@@ -192,8 +192,12 @@ class LossComputeBase(nn.Module):
         if isinstance(self.criterion, SparsemaxLoss):
             with torch.no_grad():
                 probs = sparsemax(scores.clone(), 1)
-            support_size = (probs[non_padding] > 0).sum().item()  # bad name...
+            support_size = (probs[non_padding] > 0).sum().item()
             results['support_size'] = support_size
+            beam_entropy_sum = -torch.where(
+                probs > 0, probs * torch.log2(probs), torch.tensor(0.0)
+            )[non_padding].sum().item()
+            results['beam_entropy_sum'] = beam_entropy_sum
             gold_probs = probs.gather(1, target.unsqueeze(1)).squeeze()
             n_supported = (gold_probs[non_padding] > 0).sum().item()
             results['n_supported'] = n_supported
