@@ -40,6 +40,31 @@ def beam_entropy(beam_entropy_sum, n_words, **kwargs):
 
 
 class Statistics(object):
+    '''
+    train_log_stats = [
+        ('acc', accuracy), ('ppl', perplexity), ('xent', avg_loss)
+    ]
+    valid_report_stats = [
+        ('perplexity', perplexity), ('accuracy', accuracy)
+    ]
+    '''
+    train_log_stats = [
+        ('acc', accuracy), ('loss', avg_loss),
+        ('supp. size', avg_support),
+        ('gold supp. rate', gold_support_rate),
+        ('avg beam entropy', beam_entropy)
+    ]
+    valid_report_stats = [
+        ('loss', avg_loss), ('accuracy', accuracy),
+        ('support size', avg_support),
+        ('gold support rate', gold_support_rate),
+        ('avg beam entropy', beam_entropy)
+    ]
+    tensorboard_stats = [
+        ("/xent", avg_loss),
+        ("/ppl", perplexity),
+        ("/accuracy", accuracy)
+    ]
 
     def __init__(self, loss=0, n_words=0, n_correct=0, **kwargs):
         self.stats = kwargs
@@ -48,29 +73,6 @@ class Statistics(object):
         self.stats['n_correct'] = n_correct
         self.stats['n_src_words'] = 0
         self.start_time = time.time()
-
-        # Things to report every however many steps on the training set, and
-        # the names to call them by
-        """
-        self._train_log_stats = [
-            ('acc', accuracy), ('ppl', perplexity), ('xent', avg_loss)
-        ]
-        """
-        self._train_log_stats = [
-            ('acc', accuracy), ('loss', avg_loss),
-            ('supp. size', avg_support),
-            ('gold supp. rate', gold_support_rate),
-            ('avg beam entropy', beam_entropy)
-        ]
-
-        # Things to report for the validation set when it is time to
-        # validate, and the names to call them by
-        self._report_metrics = [
-            ('loss', avg_loss), ('accuracy', accuracy),
-            ('support size', avg_support),
-            ('gold support rate', gold_support_rate),
-            ('avg beam entropy', beam_entropy)
-        ]
 
     def add_src_lengths(self, src_lengths):
         self.stats['n_src_words'] += src_lengths
@@ -149,7 +151,7 @@ class Statistics(object):
         step_count = ["Step %2d/%5d" % (step, num_steps)]
         lr = ["lr: %7.5f" % learning_rate]
         metrics = [name + ": {:.2f}".format(m_func(**self.stats))
-                   for name, m_func in self._train_log_stats]
+                   for name, m_func in self.train_log_stats]
         time_metrics = ["%3.0f/%3.0f tok/s; %6.0f sec" %
                         (self.stats['n_src_words'] / (t + 1e-5),
                          self.stats['n_words'] / (t + 1e-5),
@@ -162,15 +164,14 @@ class Statistics(object):
 
     def report(self, dataset):
         template = dataset + ' {}: {:.3f}'  # not the same as %g
-        for metric, m_func in self._report_metrics:
+        for metric, m_func in self.valid_report_stats:
             logger.info(template.format(metric, m_func(**self.stats)))
 
     def log_tensorboard(self, prefix, writer, learning_rate, step):
         """ display statistics to tensorboard """
         # todo: make this flexible
         t = self.elapsed_time()
-        writer.add_scalar(prefix + "/xent", avg_loss(**self.stats), step)
-        writer.add_scalar(prefix + "/ppl", perplexity(**self.stats), step)
-        writer.add_scalar(prefix + "/accuracy", accuracy(**self.stats), step)
+        for name, metric in self.tensorboard_stats:
+            writer.add_scalar(prefix + name, metric(**self.stats), step)
         writer.add_scalar(prefix + "/tgtper", self.stats['n_words'] / t, step)
         writer.add_scalar(prefix + "/lr", learning_rate, step)
