@@ -189,11 +189,16 @@ class LossComputeBase(nn.Module):
         results = {'loss': loss.item(),
                    'n_words': num_non_padding,
                    'n_correct': num_correct}
+
         if isinstance(self.criterion, SparsemaxLoss):
             with torch.no_grad():
                 probs = sparsemax(scores.clone(), 1)
-            support_size = (probs[non_padding] > 0).sum().item()
-            results['support_size'] = support_size
+            support_sizes = (probs[non_padding] > 0).sum(dim=1)
+            n_certain = (support_sizes == 1).sum().item()
+            n_supported = support_sizes.sum().item()
+
+            results['n_certain'] = n_certain
+            results['support_size'] = n_supported
             beam_entropy_sum = -torch.where(
                 probs > 0,
                 probs * torch.log2(probs),
@@ -201,8 +206,8 @@ class LossComputeBase(nn.Module):
             )[non_padding].sum().item()
             results['beam_entropy_sum'] = beam_entropy_sum
             gold_probs = probs.gather(1, target.unsqueeze(1)).squeeze()
-            n_supported = (gold_probs[non_padding] > 0).sum().item()
-            results['n_supported'] = n_supported
+            n_gold_supported = (gold_probs[non_padding] > 0).sum().item()
+            results['n_supported'] = n_gold_supported
 
         return onmt.utils.Statistics(**results)
 

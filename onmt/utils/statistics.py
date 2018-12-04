@@ -11,7 +11,7 @@ from onmt.utils.logging import logger
 
 
 def accuracy(n_correct, n_words, **kwargs):
-    return 100 * (n_correct / n_words)
+    return 100 * n_correct / n_words
 
 
 def avg_loss(loss, n_words, **kwargs):
@@ -31,12 +31,15 @@ def gold_support_rate(n_supported, n_words, **kwargs):
 
 
 def precision(n_correct, support_size, **kwargs):
-    # kinda silly
     return 100 * n_correct / support_size
 
 
 def beam_entropy(beam_entropy_sum, n_words, **kwargs):
     return beam_entropy_sum / n_words
+
+
+def certainty_rate(n_certain, n_words, **kwargs):
+    return 100 * n_certain / n_words
 
 
 class Statistics(object):
@@ -52,13 +55,15 @@ class Statistics(object):
         ('acc', accuracy), ('loss', avg_loss),
         ('supp. size', avg_support),
         ('gold supp. rate', gold_support_rate),
-        ('avg beam entropy', beam_entropy)
+        ('avg beam entropy', beam_entropy),
+        ('certainty rate', certainty_rate)
     ]
     valid_report_stats = [
         ('loss', avg_loss), ('accuracy', accuracy),
         ('support size', avg_support),
         ('gold support rate', gold_support_rate),
-        ('avg beam entropy', beam_entropy)
+        ('avg beam entropy', beam_entropy),
+        ('certainty rate', certainty_rate)
     ]
     tensorboard_stats = [
         ("/xent", avg_loss),
