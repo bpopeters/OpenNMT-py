@@ -2,7 +2,6 @@
 """
     Defining general functions for inputters
 """
-import glob
 import os
 import codecs
 
@@ -596,35 +595,6 @@ def build_dataset_iter(datasets, fields, opt, is_train=True):
 
     return DatasetLazyIter(datasets, fields, batch_size, batch_size_fn,
                            device, is_train)
-
-
-def lazily_load_dataset(corpus_type, opt):
-    """
-    Dataset generator. Don't do extra stuff here, like printing,
-    because they will be postponed to the first loading time.
-
-    Args:
-        corpus_type: 'train' or 'valid'
-    Returns:
-        A list of dataset, the dataset(s) are lazily loaded.
-    """
-    assert corpus_type in ["train", "valid"]
-
-    def _lazy_dataset_loader(pt_file, corpus_type):
-        dataset = torch.load(pt_file)
-        logger.info('Loading %s dataset from %s, number of examples: %d' %
-                    (corpus_type, pt_file, len(dataset)))
-        return dataset
-
-    # Sort the glob output by file name (by increasing indexes).
-    pts = sorted(glob.glob(opt.data + '.' + corpus_type + '.[0-9]*.pt'))
-    if pts:
-        for pt in pts:
-            yield _lazy_dataset_loader(pt, corpus_type)
-    else:
-        # Only one inputters.*Dataset, simple!
-        pt = opt.data + '.' + corpus_type + '.pt'
-        yield _lazy_dataset_loader(pt, corpus_type)
 
 
 def load_fields(dataset, opt, checkpoint):

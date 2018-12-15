@@ -6,13 +6,14 @@
 import configargparse
 
 import os
+import glob
 import random
 import torch
 
 import onmt.opts as opts
 
-from onmt.inputters.inputter import build_dataset_iter, lazily_load_dataset, \
-    load_fields, _collect_report_features
+from onmt.inputters.inputter import build_dataset_iter, load_fields, \
+    _collect_report_features
 from onmt.model_builder import build_model
 from onmt.utils.optimizers import build_optim
 from onmt.trainer import build_trainer
@@ -37,6 +38,23 @@ def _tally_parameters(model):
         else:
             dec += param.nelement()
     return n_params, enc, dec
+
+
+def _lazily_load_dataset(corpus_type, data_name):
+    """
+    corpus_type: 'train' or 'valid'
+    data_name: name shared by all train files
+    """
+    assert corpus_type in ["train", "valid"]
+
+    dataset_paths = glob.glob('{}.{}.[0-9]*.pt'.format(data_name, corpus_type))
+
+    # lexicographic sort, not numerical
+    for path in sorted(dataset_paths):
+        dataset = torch.load(path)
+        logger.info('Loading %s dataset from %s, number of examples: %d' %
+                    (corpus_type, path, len(dataset)))
+        yield dataset
 
 
 def training_opt_postprocessing(opt, device_id):
@@ -106,7 +124,7 @@ def main(opt, device_id):
 
     # Peek the first dataset to determine the data_type.
     # (All datasets have the same data_type).
-    first_dataset = next(lazily_load_dataset("train", opt))
+    first_dataset = next(_lazily_load_dataset("train", opt.data))
     data_type = first_dataset.data_type
 
     # Load fields generated from preprocess phase.
@@ -140,10 +158,10 @@ def main(opt, device_id):
                             optim, data_type, model_saver=model_saver)
 
     def train_iter_fct(): return build_dataset_iter(
-        lazily_load_dataset("train", opt), fields, opt)
+        _lazily_load_dataset("train", opt.data), fields, opt)
 
     def valid_iter_fct(): return build_dataset_iter(
-        lazily_load_dataset("valid", opt), fields, opt, is_train=False)
+        _lazily_load_dataset("valid", opt.data), fields, opt, is_train=False)
 
     # Do training.
     if len(opt.gpu_ranks):
