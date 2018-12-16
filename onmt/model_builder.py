@@ -183,8 +183,9 @@ def build_base_model(model_opt, fields, gpu, checkpoint=None):
 
     # Build encoder.
     if model_opt.model_type == "text":
-        feat_fields = [fields[k]
-                       for k in inputters.collect_features(fields, 'src')]
+        # lexicographic sort of feature fields
+        feat_fields = [f
+                       for k, f in sorted(fields.items()) if 'src_feat' in k]
         src_emb = build_embeddings(model_opt, fields["src"], feat_fields)
         encoder = build_encoder(model_opt, src_emb)
     elif model_opt.model_type == "img":
@@ -217,8 +218,9 @@ def build_base_model(model_opt, fields, gpu, checkpoint=None):
         )
 
     # Build decoder.
-    feat_fields = [fields[k]
-                   for k in inputters.collect_features(fields, 'tgt')]
+    # lexicographic sort of fields, as above
+    feat_fields = [f
+                   for k, f in sorted(fields.items()) if 'tgt_feat' in k]
     tgt_emb = build_embeddings(
         model_opt, fields["tgt"], feat_fields, for_encoder=False)
 

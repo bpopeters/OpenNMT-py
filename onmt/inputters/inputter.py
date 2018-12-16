@@ -4,7 +4,6 @@ import os
 import codecs
 
 from collections import Counter, defaultdict, OrderedDict
-from itertools import count
 from functools import partial
 
 import torch
@@ -139,8 +138,8 @@ def load_fields_from_vocab(vocab, data_type="text"):
              object from the input.
     """
     vocab = dict(vocab)
-    n_src_features = len(collect_features(vocab, 'src'))
-    n_tgt_features = len(collect_features(vocab, 'tgt'))
+    n_src_features = sum('src_feat' in k for k in vocab)
+    n_tgt_features = sum('tgt_feat' in k for k in vocab)
     fields = get_fields(data_type, n_src_features, n_tgt_features)
     for k, v in vocab.items():
         fields[k].vocab = v
@@ -184,17 +183,6 @@ def make_features(batch, side, data_type='text'):
         return torch.cat([level.unsqueeze(2) for level in levels], 2)
     else:
         return levels[0]
-
-
-def collect_features(fields, side="src"):
-    assert side in ["src", "tgt"]
-    feats = []
-    for j in count():
-        key = side + "_feat_" + str(j)
-        if key not in fields:
-            break
-        feats.append(key)
-    return feats
 
 
 # min_len is misnamed
@@ -596,10 +584,3 @@ def load_fields(dataset, opt, checkpoint):
                     (len(fields['tgt'].vocab)))
 
     return fields
-
-
-def _collect_report_features(fields):
-    src_features = collect_features(fields, side='src')
-    tgt_features = collect_features(fields, side='tgt')
-
-    return src_features, tgt_features
