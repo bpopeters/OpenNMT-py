@@ -72,7 +72,12 @@ def make_audio(data, vocab):
     return sounds
 
 
-def get_fields(src_data_type, n_src_features, n_tgt_features):
+# mix this with partial
+def _feature_tokenize(string, layer=0, tok_delim=None, feat_delim=u"￨"):
+    return [t.split(feat_delim)[layer] for t in string.split(tok_delim)]
+
+
+def get_fields(src_data_type, n_src_feats, n_tgt_feats):
     """
     Args:
         src_data_type: type of the source input. Options are [text|img|audio].
@@ -87,45 +92,63 @@ def get_fields(src_data_type, n_src_features, n_tgt_features):
     """
     assert src_data_type in ['text', 'img', 'audio'], \
         "Data type not implemented"
-    fields = dict()
+    fields = {'src': [], 'tgt': []}
 
     if src_data_type == 'text':
-        fields["src"] = Field(pad_token=PAD_WORD, include_lengths=True)
-        for i in range(n_src_features):
-            fields["src_feat_" + str(i)] = Field(pad_token=PAD_WORD)
+        for i in range(n_src_feats + 1):
+            name = "src_feat_" + str(i - 1) if i > 0 else "src"
+            if n_src_feats > 0:
+                tokenize = partial(_feature_tokenize, layer=i)
+            else:
+                tokenize = None
+            use_len = i == 0
+            feat = Field(
+                pad_token=PAD_WORD, tokenize=tokenize, include_lengths=use_len)
+            fields['src'].append((name, feat))
+
     elif src_data_type == 'img':
-        fields["src"] = Field(
+        img = Field(
             use_vocab=False, dtype=torch.float,
             postprocessing=make_img, sequential=False)
+        fields["src"].append(('src', img))
     else:
-        fields["src"] = Field(
+        audio = Field(
             use_vocab=False, dtype=torch.float,
             postprocessing=make_audio, sequential=False)
+        fields["src"].append(('src', audio))
 
     if src_data_type == 'audio':
         # only audio has src_lengths
-        fields["src_lengths"] = Field(
-            use_vocab=False, dtype=torch.long, sequential=False)
+        length = Field(use_vocab=False, dtype=torch.long, sequential=False)
+        fields["src_lengths"] = [("src_lengths", length)]
     else:
         # everything except audio has src_map and alignment
-        fields["src_map"] = Field(
+        src_map = Field(
             use_vocab=False, dtype=torch.float,
             postprocessing=make_src, sequential=False)
+        fields["src_map"] = [("src_map", src_map)]
 
-        fields["alignment"] = Field(
+        align = Field(
             use_vocab=False, dtype=torch.long,
             postprocessing=make_tgt, sequential=False)
+        fields["alignment"] = [('alignment', align)]
 
     # below this: things defined no matter what the data source type is
-    fields["tgt"] = Field(
-        init_token=BOS_WORD, eos_token=EOS_WORD, pad_token=PAD_WORD)
+    for i in range(n_tgt_feats + 1):
+        name = "tgt_feat_" + str(i - 1) if i > 0 else "tgt"
+        if n_tgt_feats > 0:
+            tokenize = partial(_feature_tokenize, layer=i)
+        else:
+            tokenize = None
+        feat = Field(
+            init_token=BOS_WORD,
+            eos_token=EOS_WORD,
+            pad_token=PAD_WORD,
+            tokenize=tokenize)
+        fields['tgt'].append((name, feat))
 
-    for i in range(n_tgt_features):
-        fields["tgt_feat_" + str(i)] = Field(
-            init_token=BOS_WORD, eos_token=EOS_WORD, pad_token=PAD_WORD)
-
-    fields["indices"] = Field(
-        use_vocab=False, dtype=torch.long, sequential=False)
+    indices = Field(use_vocab=False, dtype=torch.long, sequential=False)
+    fields["indices"] = [('indices', indices)]
 
     return fields
 
