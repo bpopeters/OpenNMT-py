@@ -12,7 +12,6 @@ import torchtext.data
 from torchtext.data import Field
 from torchtext.vocab import Vocab
 
-from onmt.inputters.dataset_base import PAD_WORD, BOS_WORD, EOS_WORD
 from onmt.inputters.text_dataset import TextDataset
 from onmt.inputters.image_dataset import ImageDataset
 from onmt.inputters.audio_dataset import AudioDataset
@@ -77,7 +76,14 @@ def _feature_tokenize(string, layer=0, tok_delim=None, feat_delim=u"￨"):
     return [t.split(feat_delim)[layer] for t in string.split(tok_delim)]
 
 
-def get_fields(src_data_type, n_src_feats, n_tgt_feats):
+def get_fields(
+    src_data_type,
+    n_src_feats,
+    n_tgt_feats,
+    pad='<blank>',
+    bos='<s>',
+    eos='</s>'
+):
     """
     Args:
         src_data_type: type of the source input. Options are [text|img|audio].
@@ -103,7 +109,7 @@ def get_fields(src_data_type, n_src_feats, n_tgt_feats):
                 tokenize = None
             use_len = i == 0
             feat = Field(
-                pad_token=PAD_WORD, tokenize=tokenize, include_lengths=use_len)
+                pad_token=pad, tokenize=tokenize, include_lengths=use_len)
             fields['src'].append((name, feat))
 
     elif src_data_type == 'img':
@@ -141,9 +147,9 @@ def get_fields(src_data_type, n_src_feats, n_tgt_feats):
         else:
             tokenize = None
         feat = Field(
-            init_token=BOS_WORD,
-            eos_token=EOS_WORD,
-            pad_token=PAD_WORD,
+            init_token=bos,
+            eos_token=eos,
+            pad_token=pad,
             tokenize=tokenize)
         fields['tgt'].append((name, feat))
 

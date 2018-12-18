@@ -7,11 +7,6 @@ import torch
 from torchtext.data import Example, Dataset
 from torchtext.vocab import Vocab
 
-PAD_WORD = '<blank>'
-UNK_WORD = '<unk>'
-BOS_WORD = '<s>'
-EOS_WORD = '</s>'
-
 
 class DatasetBase(Dataset):
     """
@@ -62,7 +57,6 @@ class DatasetBase(Dataset):
         examples = \
             [Example.fromdict(ex, {k: v for k, v in fields.items() if k in ex})
              for ex in examples_iter]
-        print(examples[0].__dict__)
 
         super(DatasetBase, self).__init__(examples, fields, filter_pred)
 
