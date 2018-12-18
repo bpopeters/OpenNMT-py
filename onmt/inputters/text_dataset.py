@@ -76,6 +76,7 @@ class TextDataset(DatasetBase):
         for i, seq in enumerate(sequences):
             yield {side: seq, "indices": i}
 
+
     @classmethod
     def _read_file(cls, path):
         with codecs.open(path, "r", "utf-8") as f:

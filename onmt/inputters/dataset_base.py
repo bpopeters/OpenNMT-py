@@ -4,7 +4,11 @@ from itertools import chain
 from collections import Counter
 
 import torch
+<<<<<<< HEAD
 from torchtext.data import Example, Dataset
+=======
+import torchtext
+>>>>>>> 3fffe3c2324c8090f0a6c1edeccbc9b18642e218
 from torchtext.vocab import Vocab
 
 
