@@ -238,6 +238,8 @@ def preprocess_opts(parser):
               type=int, default=0,
               help="Truncate target sequence length.")
     group.add('--lower', '-lower', action='store_true', help='lowercase data')
+    group.add('--filter_valid', '-filter_valid', action='store_true',
+              help='Filter validation data by src and/or tgt length')
 
     # Data processing options
     group = parser.add_argument_group('Random')
@@ -380,7 +382,7 @@ def train_opts(parser):
               help='Deprecated epochs see train_steps')
     group.add('--optim', '-optim', default='sgd',
               choices=['sgd', 'adagrad', 'adadelta', 'adam',
-                       'sparseadam'],
+                       'sparseadam', 'adafactor'],
               help="""Optimization method.""")
     group.add('--adagrad_accumulator_init', '-adagrad_accumulator_init',
               type=float, default=0,
