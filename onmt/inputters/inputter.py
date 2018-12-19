@@ -167,24 +167,32 @@ def load_fields_from_vocab(vocab, data_type="text"):
              are field objects with the vocab set to the corresponding vocab
              object from the input.
     """
-    vocab = dict(vocab)
-    n_src_features = len(collect_features(vocab, 'src'))
-    n_tgt_features = len(collect_features(vocab, 'tgt'))
+    # this might break if you try to train with old preprocessed models
+    n_src_features = len(vocab['src']) - 1
+    n_tgt_features = len(vocab['tgt']) - 1
     fields = get_fields(data_type, n_src_features, n_tgt_features)
-    for k, v in vocab.items():
-        fields[k].vocab = v
+    for k, values in vocab.items():
+        for i, (n, v) in enumerate(values):
+            fields[k][i][1].vocab = v
     return fields
 
 
 def save_fields_to_vocab(fields):
     """
-    fields: a dictionary whose keys are field names and whose values are
-            Field objects
-    returns: a list of (field name, vocab) pairs for the fields that have a
-             vocabulary
+    fields: a dict with the structure of the object returned by get_fields
+    returns: a dict which is similar to this one, but with the
+        torchtext.data.Field objects replaced by either torchtext.vocab.Vocab
+        objects (if the Field had a vocab) and None (otherwise)
     """
-    return [(k, f.vocab) for k, f in fields.items()
-            if f is not None and 'vocab' in f.__dict__]
+    vocabs = dict()
+    for key, field_seq in fields.items():
+        vocabs[key] = []
+        for n, f in field_seq:
+            # the f is not None check is a relic: not sure it is still needed
+            v = f.vocab if f is not None and 'vocab' in f.__dict__ else None
+            vocabs[key].append((n, v))
+    return vocabs
+            
 
 
 def make_features(batch, side, data_type='text'):
@@ -594,15 +602,14 @@ def load_fields(dataset, opt, checkpoint):
 
     fields = load_fields_from_vocab(vocab, data_type)
 
-    ex_fields = dataset.examples[0].__dict__
-    fields = {k: f for k, f in fields.items() if k in ex_fields}
-
+    tgt_field = fields['tgt'][0][1]
     if data_type == 'text':
+        src_field = fields['src'][0][1]
         logger.info(' * vocabulary size. source = %d; target = %d' %
-                    (len(fields['src'].vocab), len(fields['tgt'].vocab)))
+                    (len(src_field.vocab), len(tgt_field.vocab)))
     else:
         logger.info(' * vocabulary size. target = %d' %
-                    (len(fields['tgt'].vocab)))
+                    (len(tgt_field.vocab)))
 
     return fields
 
