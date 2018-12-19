@@ -192,7 +192,6 @@ def save_fields_to_vocab(fields):
             v = f.vocab if f is not None and 'vocab' in f.__dict__ else None
             vocabs[key].append((n, v))
     return vocabs
-            
 
 
 def make_features(batch, side, data_type='text'):
@@ -221,17 +220,6 @@ def make_features(batch, side, data_type='text'):
         return torch.cat([level.unsqueeze(2) for level in levels], 2)
     else:
         return levels[0]
-
-
-def collect_features(fields, side="src"):
-    assert side in ["src", "tgt"]
-    feats = []
-    for j in count():
-        key = side + "_feat_" + str(j)
-        if key not in fields:
-            break
-        feats.append(key)
-    return feats
 
 
 # min_len is misnamed
