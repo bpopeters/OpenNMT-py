@@ -612,10 +612,3 @@ def load_fields(dataset, opt, checkpoint):
                     (len(tgt_field.vocab)))
 
     return fields
-
-
-def _collect_report_features(fields):
-    src_features = collect_features(fields, side='src')
-    tgt_features = collect_features(fields, side='tgt')
-
-    return src_features, tgt_features
