@@ -71,6 +71,19 @@ def make_audio(data, vocab):
     return sounds
 
 
+def count_features(path):
+    """
+    path: location of a corpus file with whitespace-delimited tokens and
+                    ￨-delimited features within the token
+    returns: the number of features in the dataset
+    """
+    # todo: allow this to depend on the tokenizer, refactor this in general
+    with codecs.open(path, "r", "utf-8") as f:
+        first_line = f.readline()
+        first_tok = _feature_tokenize(first_line, layer=slice(None))[0]
+        return len(first_tok) - 1
+
+
 # mix this with partial
 def _feature_tokenize(string, layer=0, tok_delim=None, feat_delim=u"￨"):
     return [t.split(feat_delim)[layer] for t in string.split(tok_delim)]
