@@ -10,16 +10,41 @@ from torchtext.vocab import Vocab
 
 class DatasetBase(Dataset):
     """
-    A dataset basically supports iteration over all the examples
-    it contains. We currently have 3 datasets inheriting this base
-    for 3 types of corpus respectively: "text", "img", "audio".
+    A dataset is an object that accepts sequences of raw data (sentence pairs
+    in the case of machine translation) and fields which describe how this
+    raw data should be processed to produce tensors. When a dataset is
+    instantiated, it applies the fields' preprocessing pipeline (but not
+    the bit that numericalizes it or turns it into batch tensors) to the raw
+    data, producing a list of torchtext.data.Example objects. torchtext's
+    iterators then know how to use these examples to make batches.
 
-    Internally it initializes an `torchtext.data.Dataset` object with
-    the following attributes:
+    Datasets in OpenNMT take three positional arguments:
 
-     `examples`: a sequence of `torchtext.data.Example` objects.
-     `fields`: a dictionary associating str keys with `torchtext.data.Field`
-        objects, and not necessarily having the same keys as the input fields.
+    `fields`: a dict with the structure returned by inputters.get_fields().
+        keys match the keys of items yielded by the src_examples_iter or
+        tgt_examples_iter, while values are lists of (name, Field) pairs.
+        An attribute with this name will be created for each Example object,
+        and its value will be the result of applying the Field to the data
+        that matches the key. The advantage of having sequences of fields
+        for each piece of raw input is that it allows for the dataset to store
+        multiple `views` of each input, which allows for easy implementation
+        of token-level features, mixed word- and character-level models, and
+        so on.
+    `src_examples_iter`: a sequence of dicts. Each dict's keys should be a
+        subset of the keys in `fields`.
+    `tgt_examples_iter`: like `src_examples_iter`, but may be None (this is
+        the case at translation time if no target is specified).
+
+    (todo: describe the optional arguments)
+
+    The resulting dataset will have three attributes (todo: also src_vocabs):
+
+     `examples`: a list of `torchtext.data.Example` objects with attributes as
+        described above.
+     `fields`: a dictionary whose keys are strings that correspond to the
+        attributes of the elements of `examples` and whose values are
+        the corresponding `torchtext.data.Field` objects. NOTE: this is not
+        the same structure as in the fields argument passed to the constructor.
     """
 
     def __getstate__(self):
@@ -52,10 +77,9 @@ class DatasetBase(Dataset):
             examples_iter = (self._dynamic_dict(ex, unk, pad)
                              for ex in examples_iter)
 
-        # the field gets filtered because there are problems if the field
-        # contains keys not present in the example
         examples = \
-            [Example.fromdict(ex, {k: v for k, v in fields.items() if k in ex})
+            [Example.fromdict(
+                ex, {k: v for k, v in fields.items() if k in ex.__dict__})
              for ex in examples_iter]
 
         fields = dict(chain.from_iterable(fields.values()))  # flatten fields

@@ -98,16 +98,15 @@ def get_fields(
     eos='</s>'
 ):
     """
-    Args:
-        src_data_type: type of the source input. Options are [text|img|audio].
-        n_src_features: the number of source features to
-            create `torchtext.data.Field` for.
-        n_tgt_features: the number of target features to
-            create `torchtext.data.Field` for.
-
-    Returns:
-        A dictionary whose keys are strings and whose values are the
-        corresponding Field objects.
+    src_data_type: type of the source input. Options are [text|img|audio].
+    n_src_feats, n_tgt_feats: the number of source and target features to
+        create a `torchtext.data.Field` for.
+    pad, bos, eos: special symbols to use for fields.
+    returns: A dictionary. The keys are strings whose names correspond to the
+        keys of the dictionaries yielded by the make_examples methods of
+        various dataset classes. The values are lists of (name, Field)
+        pairs, where the name is a string which will become the name of
+        an attribute of an example.
     """
     assert src_data_type in ['text', 'img', 'audio'], \
         "Data type not implemented"
