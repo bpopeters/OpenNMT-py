@@ -58,6 +58,8 @@ class DatasetBase(Dataset):
             [Example.fromdict(ex, {k: v for k, v in fields.items() if k in ex})
              for ex in examples_iter]
 
+        fields = dict(chain.from_iterable(fields.values()))  # flatten fields
+
         super(DatasetBase, self).__init__(examples, fields, filter_pred)
 
     def save(self, path, remove_fields=True):

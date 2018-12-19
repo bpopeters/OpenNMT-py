@@ -542,7 +542,9 @@ def build_dataset_iter(datasets, fields, opt, is_train=True):
 
     device = "cuda" if opt.gpu_ranks else "cpu"
 
-    return DatasetLazyIter(datasets, fields, batch_size, batch_size_fn,
+    # the dataset and iterator want a fields object that has flat fields
+    dataset_fields = dict(chain.from_iterable(fields.values()))
+    return DatasetLazyIter(datasets, dataset_fields, batch_size, batch_size_fn,
                            device, is_train)
 
 
