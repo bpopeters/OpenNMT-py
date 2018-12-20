@@ -103,7 +103,6 @@ def build_save_dataset(corpus_type, fields, opt):
             tgt_seq_len=opt.tgt_seq_length,
             src_seq_length_trunc=opt.src_seq_length_trunc,
             tgt_seq_length_trunc=opt.tgt_seq_length_trunc,
-            dynamic_dict=opt.dynamic_dict,
             sample_rate=opt.sample_rate,
             window_size=opt.window_size,
             window_stride=opt.window_stride,

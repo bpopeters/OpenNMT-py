@@ -35,13 +35,15 @@ class DatasetBase(Dataset):
     `tgt_examples_iter`: like `src_examples_iter`, but may be None (this is
         the case at translation time if no target is specified).
 
-    (todo: describe the optional arguments)
+    `filter_pred` if specified, a function that accepts Example objects and
+        returns a boolean value indicating whether to include that example
+        in the dataset.
 
     The resulting dataset will have three attributes (todo: also src_vocabs):
 
      `examples`: a list of `torchtext.data.Example` objects with attributes as
         described above.
-     `fields`: a dictionary whose keys are strings that correspond to the
+     `fields`: a dictionary whose keys are strings with the same names as the
         attributes of the elements of `examples` and whose values are
         the corresponding `torchtext.data.Field` objects. NOTE: this is not
         the same structure as in the fields argument passed to the constructor.
@@ -58,31 +60,33 @@ class DatasetBase(Dataset):
         return super(DatasetBase, self).__reduce_ex__()
 
     def __init__(self, fields, src_examples_iter, tgt_examples_iter,
-                 dynamic_dict=False, filter_pred=None):
+                 filter_pred=None):
 
-        # Each element of an example is a dictionary whose keys represents
-        # at minimum the src tokens and their indices and potentially also
-        # the src and tgt features and alignment information.
+        dynamic_dict = 'src_map' in fields
+
         if tgt_examples_iter is not None:
             examples_iter = (self._join_dicts(src, tgt) for src, tgt in
                              zip(src_examples_iter, tgt_examples_iter))
         else:
             examples_iter = src_examples_iter
 
-        # self.src_vocabs is used in collapse_copy_scores and in Translator.py
+        # self.src_vocabs is used in collapse_copy_scores and Translator.py
         self.src_vocabs = []
-        if dynamic_dict:
-            src_field = fields['src'][0][1]
-            tgt_field = fields['tgt'][0][1]
-            examples_iter = (self._dynamic_dict(ex, src_field, tgt_field)
-                             for ex in examples_iter)
+        src_field = fields['src'][0][1]
+        tgt_field = fields['tgt'][0][1]
+        examples = []
+        for ex_dict in examples_iter:
+            if dynamic_dict:
+                src_vocab, ex_dict = self._dynamic_dict(
+                    ex_dict, src_field, tgt_field)
+                self.src_vocabs.append(src_vocab)
+            ex_fields = {k: v for k, v in fields.items() if k in ex_dict}
+            ex = Example.fromdict(ex_dict, ex_fields)
+            examples.append(ex)
 
-        examples = \
-            [Example.fromdict(
-                ex, {k: v for k, v in fields.items() if k in ex})
-             for ex in examples_iter]
-
-        fields = dict(chain.from_iterable(fields.values()))  # flatten fields
+        # the dataset's fields attribute should only include attributes that
+        # the examples have
+        fields = dict(chain.from_iterable(ex_fields.values()))
 
         super(DatasetBase, self).__init__(examples, fields, filter_pred)
 
@@ -107,10 +111,7 @@ class DatasetBase(Dataset):
         unk = src_field.unk_token
         pad = src_field.pad_token
         src_vocab = Vocab(Counter(src), specials=[unk, pad])
-        # append that vocab to a list, so there will be one for each example
-        self.src_vocabs.append(src_vocab)
         # Map source tokens to indices in the dynamic dict.
-        # hmm, yeah, it's challenging that you have
         src_map = torch.LongTensor([src_vocab.stoi[w] for w in src])
         example["src_map"] = src_map
 
@@ -119,4 +120,4 @@ class DatasetBase(Dataset):
             mask = torch.LongTensor(
                 [0] + [src_vocab.stoi[w] for w in tgt] + [0])
             example["alignment"] = mask
-        return example
+        return src_vocab, example

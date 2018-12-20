@@ -168,7 +168,6 @@ class Translator(object):
             window=self.window,
             use_filter_pred=self.use_filter_pred,
             image_channel_size=self.image_channel_size,
-            dynamic_dict=self.copy_attn
         )
 
         cur_device = "cuda" if self.cuda else "cpu"

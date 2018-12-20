@@ -111,6 +111,8 @@ def get_fields(
     """
     assert src_data_type in ['text', 'img', 'audio'], \
         "Data type not implemented"
+    assert not dynamic_dict or src_data_type == 'text', \
+        'it is not possible to use dynamic_dict with non-text input'
     fields = {'src': [], 'tgt': []}
 
     if src_data_type == 'text':
@@ -257,7 +259,7 @@ def build_dataset(fields, data_type, src,
                   src_dir=None, tgt=None,
                   src_seq_len=50, tgt_seq_len=50,
                   src_seq_length_trunc=0, tgt_seq_length_trunc=0,
-                  dynamic_dict=False, sample_rate=0,
+                  sample_rate=0,
                   window_size=0, window_stride=0, window=None,
                   normalize_audio=True, use_filter_pred=True,
                   image_channel_size=3):
@@ -270,8 +272,6 @@ def build_dataset(fields, data_type, src,
     }
     assert data_type in dataset_classes
     assert src is not None
-    assert not dynamic_dict or data_type == 'text', \
-        'it is not possible to use dynamic_dict with non-text input'
     if data_type == 'text':
         src_examples_iter = TextDataset.make_examples(
             src, src_seq_length_trunc, "src"
@@ -306,8 +306,7 @@ def build_dataset(fields, data_type, src,
 
     dataset_cls = dataset_classes[data_type]
     dataset = dataset_cls(
-        fields, src_examples_iter, tgt_examples_iter,
-        dynamic_dict=dynamic_dict, filter_pred=filter_pred)
+        fields, src_examples_iter, tgt_examples_iter, filter_pred=filter_pred)
     return dataset
 
 
