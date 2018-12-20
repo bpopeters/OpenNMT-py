@@ -302,13 +302,18 @@ class Translator(object):
             else:
                 return self._translate_batch(batch, data)
 
-    def _run_encoder(self, batch, data_type):
-        src = inputters.make_features(batch, 'src', data_type)
-        src_lengths = None
-        if data_type == 'text':
+    def _run_encoder(self, batch):
+        if isinstance(batch.src, tuple):
+            # in the long run this might not always be the best way to make
+            # the source, but in the long run inputters.make_features should
+            # not exist: fields and iterators convert data into tensors
             _, src_lengths = batch.src
-        elif data_type == 'audio':
-            src_lengths = batch.src_lengths
+            src = inputters.make_features(batch, 'src')
+        else:
+            src = batch.src
+            src_lengths = batch.src_lengths if hasattr(batch, 'src_lengths') \
+                else None
+
         enc_states, memory_bank, src_lengths = self.model.encoder(
             src, src_lengths)
         if src_lengths is None:
@@ -404,11 +409,10 @@ class Translator(object):
         end_token = vocab.stoi[tgt_field.eos_token]
 
         # Encoder forward.
-        src, enc_states, memory_bank, src_lengths = self._run_encoder(
-            batch, data.data_type)
+        src, enc_states, memory_bank, src_lengths = self._run_encoder(batch)
         self.model.decoder.init_state(src, memory_bank, enc_states)
 
-        use_src_map = data.data_type == 'text' and self.copy_attn
+        use_src_map = data.can_copy and self.copy_attn
 
         results = {}
         results["predictions"] = [[] for _ in range(batch_size)]  # noqa: F812
@@ -593,7 +597,6 @@ class Translator(object):
         # And helper method for reducing verbosity.
         beam_size = self.beam_size
         batch_size = batch.batch_size
-        data_type = data.data_type
         tgt_field = self.fields["tgt"][0][1]
         vocab = tgt_field.vocab
 
@@ -614,8 +617,7 @@ class Translator(object):
                 for __ in range(batch_size)]
 
         # (1) Run the encoder on the src.
-        src, enc_states, memory_bank, src_lengths = self._run_encoder(
-            batch, data_type)
+        src, enc_states, memory_bank, src_lengths = self._run_encoder(batch)
         self.model.decoder.init_state(src, memory_bank, enc_states)
 
         results = {}
@@ -626,7 +628,7 @@ class Translator(object):
         if "tgt" in batch.__dict__:
             results["gold_score"] = self._score_target(
                 batch, memory_bank, src_lengths, data, batch.src_map
-                if data_type == 'text' and self.copy_attn else None)
+                if data.can_copy and self.copy_attn else None)
             self.model.decoder.init_state(src, memory_bank, enc_states)
         else:
             results["gold_score"] = [0] * batch_size
@@ -634,7 +636,7 @@ class Translator(object):
         # (2) Repeat src objects `beam_size` times.
         # We use now  batch_size x beam_size (same as fast mode)
         src_map = (tile(batch.src_map, beam_size, dim=1)
-                   if data.data_type == 'text' and self.copy_attn else None)
+                   if data.can_copy and self.copy_attn else None)
         self.model.decoder.map_state(
             lambda state, dim: tile(state, beam_size, dim=dim))
 

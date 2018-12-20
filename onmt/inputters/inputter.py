@@ -214,7 +214,7 @@ def save_fields_to_vocab(fields):
     return vocabs
 
 
-def make_features(batch, side, data_type='text'):
+def make_features(batch, side):
     """
     Args:
         batch (Tensor): a batch of source or target data.
@@ -236,10 +236,7 @@ def make_features(batch, side, data_type='text'):
     features = [batch.__dict__[k] for k in keys]
     levels = [data] + features
 
-    if data_type == 'text':
-        return torch.cat([level.unsqueeze(2) for level in levels], 2)
-    else:
-        return levels[0]
+    return torch.cat([level.unsqueeze(2) for level in levels], 2)
 
 
 def filter_example(ex, use_src_len=True, use_tgt_len=True,

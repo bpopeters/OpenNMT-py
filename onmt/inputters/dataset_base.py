@@ -62,7 +62,7 @@ class DatasetBase(Dataset):
     def __init__(self, fields, src_examples_iter, tgt_examples_iter,
                  filter_pred=None):
 
-        dynamic_dict = 'src_map' in fields
+        dynamic_dict = 'src_map' in fields and 'alignment' in fields
 
         if tgt_examples_iter is not None:
             examples_iter = (self._join_dicts(src, tgt) for src, tgt in
@@ -84,8 +84,7 @@ class DatasetBase(Dataset):
             ex = Example.fromdict(ex_dict, ex_fields)
             examples.append(ex)
 
-        # the dataset's fields attribute should only include attributes that
-        # the examples have
+        # the dataset's self.fields should have the same attributes as examples
         fields = dict(chain.from_iterable(ex_fields.values()))
 
         super(DatasetBase, self).__init__(examples, fields, filter_pred)
@@ -121,3 +120,7 @@ class DatasetBase(Dataset):
                 [0] + [src_vocab.stoi[w] for w in tgt] + [0])
             example["alignment"] = mask
         return src_vocab, example
+
+    @property
+    def can_copy(self):
+        return False

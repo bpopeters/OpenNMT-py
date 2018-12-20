@@ -222,7 +222,7 @@ class Trainer(object):
         stats = onmt.utils.Statistics()
 
         for batch in valid_iter:
-            src = inputters.make_features(batch, 'src', self.data_type)
+            src = inputters.make_features(batch, 'src')
             if self.data_type == 'text':
                 _, src_lengths = batch.src
             elif self.data_type == 'audio':
@@ -261,14 +261,14 @@ class Trainer(object):
                 trunc_size = target_size
 
             # dec_state = None
-            src = inputters.make_features(batch, 'src', self.data_type)
             if self.data_type == 'text':
+                src = inputters.make_features(batch, 'src')
                 _, src_lengths = batch.src
                 report_stats.n_src_words += src_lengths.sum().item()
-            elif self.data_type == 'audio':
-                src_lengths = batch.src_lengths
             else:
-                src_lengths = None
+                src = batch.src
+                src_lengths = batch.src_lengths if self.data_type == 'audio' \
+                    else None
 
             tgt_outer = inputters.make_features(batch, 'tgt')
 
