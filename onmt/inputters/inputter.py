@@ -139,7 +139,7 @@ def get_fields(
         # only audio has src_lengths
         length = Field(use_vocab=False, dtype=torch.long, sequential=False)
         fields["src_lengths"] = [("src_lengths", length)]
-    '''
+
     else:
         # everything except audio has src_map and alignment
         src_map = Field(
@@ -151,7 +151,6 @@ def get_fields(
             use_vocab=False, dtype=torch.long,
             postprocessing=make_tgt, sequential=False)
         fields["alignment"] = [('alignment', align)]
-    '''
 
     # below this: things defined no matter what the data source type is
     for i in range(n_tgt_feats + 1):

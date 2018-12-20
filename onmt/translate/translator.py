@@ -368,7 +368,7 @@ class Translator(object):
             scores = data.collapse_copy_scores(
                 scores,
                 batch,
-                self.fields["tgt"].vocab,
+                tgt_field.vocab,
                 data.src_vocabs,
                 batch_dim=0,
                 batch_offset=batch_offset

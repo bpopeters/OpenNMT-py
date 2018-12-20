@@ -72,14 +72,14 @@ class DatasetBase(Dataset):
         # self.src_vocabs is used in collapse_copy_scores and in Translator.py
         self.src_vocabs = []
         if dynamic_dict:
-            unk = fields['src'][0][1].unk_token
-            pad = fields['src'][0][1].pad_token
-            examples_iter = (self._dynamic_dict(ex, unk, pad)
+            src_field = fields['src'][0][1]
+            tgt_field = fields['tgt'][0][1]
+            examples_iter = (self._dynamic_dict(ex, src_field, tgt_field)
                              for ex in examples_iter)
 
         examples = \
             [Example.fromdict(
-                ex, {k: v for k, v in fields.items() if k in ex.__dict__})
+                ex, {k: v for k, v in fields.items() if k in ex})
              for ex in examples_iter]
 
         fields = dict(chain.from_iterable(fields.values()))  # flatten fields
@@ -101,18 +101,21 @@ class DatasetBase(Dataset):
         """
         return dict(chain(*[d.items() for d in args]))
 
-    def _dynamic_dict(self, example, unk, pad):
-        # it would not be necessary to pass unk and pad if the method were
-        # called after fields becomes an attribute of self
-        src = example["src"]
+    def _dynamic_dict(self, example, src_field, tgt_field):
+        src = src_field.tokenize(example["src"])
+        # make a small vocab containing just the tokens in the source sequence
+        unk = src_field.unk_token
+        pad = src_field.pad_token
         src_vocab = Vocab(Counter(src), specials=[unk, pad])
+        # append that vocab to a list, so there will be one for each example
         self.src_vocabs.append(src_vocab)
         # Map source tokens to indices in the dynamic dict.
+        # hmm, yeah, it's challenging that you have
         src_map = torch.LongTensor([src_vocab.stoi[w] for w in src])
         example["src_map"] = src_map
 
         if "tgt" in example:
-            tgt = example["tgt"]
+            tgt = tgt_field.tokenize(example["tgt"])
             mask = torch.LongTensor(
                 [0] + [src_vocab.stoi[w] for w in tgt] + [0])
             example["alignment"] = mask
