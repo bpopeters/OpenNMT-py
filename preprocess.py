@@ -161,8 +161,9 @@ def main():
     logger.info(" * number of target features: %d." % tgt_nfeats)
 
     logger.info("Building `Fields` object...")
-    fields = inputters.get_fields(opt.data_type, src_nfeats, tgt_nfeats)
-
+    fields = inputters.get_fields(
+        opt.data_type, src_nfeats, tgt_nfeats, dynamic_dict=opt.dynamic_dict
+    )
     logger.info("Building & saving training data...")
     train_dataset_files = build_save_dataset('train', fields, opt)
 

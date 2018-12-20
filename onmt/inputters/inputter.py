@@ -95,7 +95,8 @@ def get_fields(
     n_tgt_feats,
     pad='<blank>',
     bos='<s>',
-    eos='</s>'
+    eos='</s>',
+    dynamic_dict=False
 ):
     """
     src_data_type: type of the source input. Options are [text|img|audio].
@@ -138,7 +139,8 @@ def get_fields(
         # only audio has src_lengths
         length = Field(use_vocab=False, dtype=torch.long, sequential=False)
         fields["src_lengths"] = [("src_lengths", length)]
-    else:
+
+    if dynamic_dict:
         # everything except audio has src_map and alignment
         src_map = Field(
             use_vocab=False, dtype=torch.float,
@@ -184,7 +186,9 @@ def load_fields_from_vocab(vocab, data_type):
     # this might break if you try to train with old preprocessed models
     n_src_features = len(vocab['src']) - 1
     n_tgt_features = len(vocab['tgt']) - 1
-    fields = get_fields(data_type, n_src_features, n_tgt_features)
+    dynamic_dict = 'src_map' in vocab
+    fields = get_fields(
+        data_type, n_src_features, n_tgt_features, dynamic_dict=dynamic_dict)
     for k, values in vocab.items():
         for i, (n, v) in enumerate(values):
             fields[k][i][1].vocab = v
@@ -593,13 +597,12 @@ def load_fields(dataset, opt, checkpoint):
 
     fields = load_fields_from_vocab(vocab, data_type)
 
-    tgt_field = fields['tgt'][0][1]
+    tgt_vocab_size = len(fields['tgt'][0][1].vocab)
     if data_type == 'text':
-        src_field = fields['src'][0][1]
+        src_vocab_size = len(fields['src'][0][1].vocab)
         logger.info(' * vocabulary size. source = %d; target = %d' %
-                    (len(src_field.vocab), len(tgt_field.vocab)))
+                    (src_vocab_size, tgt_vocab_size))
     else:
-        logger.info(' * vocabulary size. target = %d' %
-                    (len(tgt_field.vocab)))
+        logger.info(' * vocabulary size. target = %d' % tgt_vocab_size)
 
     return fields
