@@ -3,7 +3,7 @@ import glob
 import os
 import codecs
 
-from collections import Counter, defaultdict, OrderedDict
+from collections import Counter, defaultdict
 from itertools import chain
 from functools import partial
 
@@ -123,7 +123,6 @@ def get_fields(
             feat = Field(
                 pad_token=pad, tokenize=tokenize, include_lengths=use_len)
             fields['src'].append((name, feat))
-
     elif src_data_type == 'img':
         img = Field(
             use_vocab=False, dtype=torch.float,
@@ -139,7 +138,6 @@ def get_fields(
         # only audio has src_lengths
         length = Field(use_vocab=False, dtype=torch.long, sequential=False)
         fields["src_lengths"] = [("src_lengths", length)]
-
     else:
         # everything except audio has src_map and alignment
         src_map = Field(
@@ -172,13 +170,16 @@ def get_fields(
     return fields
 
 
-def load_fields_from_vocab(vocab, data_type="text"):
+def load_fields_from_vocab(vocab, data_type):
     """
-    vocab: a list of (field name, torchtext.vocab.Vocab) pairs
+    vocab: A dictionary. The keys are strings whose names correspond to the
+        keys of the dictionaries yielded by the make_examples methods of
+        various dataset classes. The values are lists of (name, Vocab)
+        pairs, where the name is a string which will become the name of
+        an attribute of an example.
     data_type: text, img, or audio
-    returns: a dictionary whose keys are the field names and whose values
-             are field objects with the vocab set to the corresponding vocab
-             object from the input.
+    returns: a dictionary with the same structure, but values are Field
+        objects with the vocab set to the corresponding Vocab.
     """
     # this might break if you try to train with old preprocessed models
     n_src_features = len(vocab['src']) - 1
@@ -307,10 +308,11 @@ def build_dataset(fields, data_type, src,
 
 
 def _build_field_vocab(field, counter, **kwargs):
-    specials = list(OrderedDict.fromkeys(
-        tok for tok in [field.unk_token, field.pad_token, field.init_token,
-                        field.eos_token]
-        if tok is not None))
+    # this is basically copy-pasted from torchtext.
+    all_specials = [
+        field.unk_token, field.pad_token, field.init_token, field.eos_token
+    ]
+    specials = [tok for tok in all_specials if tok is not None]
     field.vocab = field.vocab_cls(counter, specials=specials, **kwargs)
 
 
@@ -342,7 +344,7 @@ def build_vocab(train_dataset_files, fields, data_type, share_vocab,
 
     # Load vocabulary
     if src_vocab_path:
-        src_vocab = load_vocabulary(src_vocab_path, "src")
+        src_vocab = _read_vocab_file(src_vocab_path, "src")
         src_vocab_size = len(src_vocab)
         logger.info('Loaded source vocab has %d tokens.' % src_vocab_size)
         for i, token in enumerate(src_vocab):
@@ -353,7 +355,7 @@ def build_vocab(train_dataset_files, fields, data_type, share_vocab,
         src_vocab = None
 
     if tgt_vocab_path:
-        tgt_vocab = load_vocabulary(tgt_vocab_path, "tgt")
+        tgt_vocab = _read_vocab_file(tgt_vocab_path, "tgt")
         tgt_vocab_size = len(tgt_vocab)
         logger.info('Loaded source vocab has %d tokens.' % tgt_vocab_size)
         for i, token in enumerate(tgt_vocab):
@@ -418,7 +420,7 @@ def _merge_field_vocabs(src_field, tgt_field, vocab_size, min_freq):
     assert len(src_field.vocab) == len(tgt_field.vocab)
 
 
-def load_vocabulary(vocab_path, tag):
+def _read_vocab_file(vocab_path, tag):
     """
     Loads a vocabulary from the given path.
     :param vocabulary_path: path to load vocabulary from
@@ -560,33 +562,20 @@ def build_dataset_iter(datasets, fields, opt, is_train=True):
                            device, is_train)
 
 
-def lazily_load_dataset(corpus_type, opt):
+def lazily_load_dataset(corpus_type, data_name):
     """
-    Dataset generator. Don't do extra stuff here, like printing,
-    because they will be postponed to the first loading time.
-
-    Args:
-        corpus_type: 'train' or 'valid'
-    Returns:
-        A list of dataset, the dataset(s) are lazily loaded.
+    corpus_type: 'train' or 'valid'
+    yields: dataset objects
     """
     assert corpus_type in ["train", "valid"]
 
-    def _lazy_dataset_loader(pt_file, corpus_type):
-        dataset = torch.load(pt_file)
+    # this is a lexicographic sort, not numeric ('10' is before '2')
+    paths = sorted(glob.glob(data_name + '.' + corpus_type + '*.pt'))
+    for path in paths:
+        dataset = torch.load(path)
         logger.info('Loading %s dataset from %s, number of examples: %d' %
-                    (corpus_type, pt_file, len(dataset)))
-        return dataset
-
-    # Sort the glob output by file name (by increasing indexes).
-    pts = sorted(glob.glob(opt.data + '.' + corpus_type + '.[0-9]*.pt'))
-    if pts:
-        for pt in pts:
-            yield _lazy_dataset_loader(pt, corpus_type)
-    else:
-        # Only one inputters.*Dataset, simple!
-        pt = opt.data + '.' + corpus_type + '.pt'
-        yield _lazy_dataset_loader(pt, corpus_type)
+                    (corpus_type, path, len(dataset)))
+        yield dataset
 
 
 def load_fields(dataset, opt, checkpoint):
