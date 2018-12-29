@@ -96,6 +96,30 @@ def count_features(path):
         return len(first_tok.split(u"￨")) - 1
 
 
+def _save_shard(shard, corpus_name, split_name, shard_name, delete=True):
+    data_path = "{:s}.{:s}.{:d}.pt".format(corpus_name, split_name, shard_name)
+    logger.info(" * saving {} shard to {}.".format('train', data_path))
+    shard.save(data_path)
+    if delete:
+        del shard.examples
+        gc.collect()
+        del shard
+        gc.collect()
+
+
+def _filter_field_vocab(field, max_size=None, min_freq=0, **kwargs):
+    all_specials = [field.unk_token, field.pad_token,
+                    field.init_token, field.eos_token]
+    specials = [t for t in all_specials if t is not None]
+    freqs = field.vocab.freqs
+    field.vocab = field.vocab_cls(
+        freqs,
+        max_size=max_size,
+        min_freq=min_freq,
+        specials=specials,
+        **kwargs)
+
+
 def main():
     opt = parse_args()
 
@@ -131,31 +155,30 @@ def main():
         for name, field in fields.items():
             if field.use_vocab:
                 field.extend_vocab(shard)
-        data_path = "{:s}.{:s}.{:d}.pt".format(opt.save_data, 'train', i)
-        shard.save(data_path)
-        logger.info(" * saving %sth %s data shard to %s."
-                    % (i, 'train', data_path))
-        del shard.examples
-        gc.collect()
-        del shard
-        gc.collect()
+        _save_shard(shard, opt.save_data, 'train', i)
 
     logger.info("Building validation data...")
     valid_shards = build_datasets(
         opt.valid_src, opt.valid_tgt, fields, opt, opt.filter_valid)
     for i, shard in enumerate(valid_shards):
         logger.info("Building shard %d." % i)
-        data_path = "{:s}.{:s}.{:d}.pt".format(opt.save_data, 'valid', i)
-        shard.save(data_path)
-        logger.info(" * saving %sth %s data shard to %s."
-                    % (i, 'valid', data_path))
-        del shard.examples
-        gc.collect()
-        del shard
-        gc.collect()
+        _save_shard(shard, opt.save_data, 'valid', i)
 
-    # things you still need to do with vocab: vocab size, min_freq, sharing
+    # things you still need to do with vocab: sharing, loading vocab
     logger.info("Saving vocabulary...")
+    if opt.src_words_min_frequency or opt.src_vocab_size:
+        _filter_field_vocab(
+            fields['src'],
+            max_size=opt.src_vocab_size,
+            min_freq=opt.src_words_min_frequency)
+    if opt.tgt_words_min_frequency or opt.tgt_vocab_size:
+        _filter_field_vocab(
+            fields['tgt'],
+            max_size=opt.tgt_vocab_size,
+            min_freq=opt.tgt_words_min_frequency)
+    for n, f in fields.items():
+        if f.use_vocab:
+            logger.info(' * {} vocabulary size = {}'.format(n, len(f.vocab)))
     vocab_path = opt.save_data + '.vocab.pt'
     torch.save(inputters.save_fields_to_vocab(fields), vocab_path)
 
