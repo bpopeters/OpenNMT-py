@@ -56,26 +56,15 @@ def split_corpus(path, shard_size):
             yield shard
 
 
-def build_save_dataset(corpus_type, fields, opt):
-    assert corpus_type in ['train', 'valid']
-
-    if corpus_type == 'train':
-        src = opt.train_src
-        tgt = opt.train_tgt
-    else:
-        src = opt.valid_src
-        tgt = opt.valid_tgt
-
+def build_datasets(src, tgt, fields, opt, use_filter_pred=True):
     logger.info("Reading source and target files: %s %s." % (src, tgt))
 
     src_shards = split_corpus(src, opt.shard_size)
     tgt_shards = split_corpus(tgt, opt.shard_size)
     shard_pairs = zip(src_shards, tgt_shards)
-    dataset_paths = []
 
-    for i, (src_shard, tgt_shard) in enumerate(shard_pairs):
+    for src_shard, tgt_shard in shard_pairs:
         assert len(src_shard) == len(tgt_shard)
-        logger.info("Building shard %d." % i)
         dataset = inputters.build_dataset(
             fields, opt.data_type,
             src=src_shard,
@@ -91,34 +80,9 @@ def build_save_dataset(corpus_type, fields, opt):
             window_stride=opt.window_stride,
             window=opt.window,
             image_channel_size=opt.image_channel_size,
-            use_filter_pred=corpus_type == 'train' or opt.filter_valid
+            use_filter_pred=use_filter_pred
         )
-
-        data_path = "{:s}.{:s}.{:d}.pt".format(opt.save_data, corpus_type, i)
-        dataset_paths.append(data_path)
-
-        logger.info(" * saving %sth %s data shard to %s."
-                    % (i, corpus_type, data_path))
-
-        dataset.save(data_path)
-
-        del dataset.examples
-        gc.collect()
-        del dataset
-        gc.collect()
-
-    return dataset_paths
-
-
-def build_save_vocab(train_dataset, fields, opt):
-    fields = inputters.build_vocab(
-        train_dataset, fields, opt.data_type, opt.share_vocab,
-        opt.src_vocab, opt.src_vocab_size, opt.src_words_min_frequency,
-        opt.tgt_vocab, opt.tgt_vocab_size, opt.tgt_words_min_frequency
-    )
-
-    vocab_path = opt.save_data + '.vocab.pt'
-    torch.save(inputters.save_fields_to_vocab(fields), vocab_path)
+        yield dataset
 
 
 def count_features(path):
@@ -160,14 +124,40 @@ def main():
     logger.info("Building `Fields` object...")
     fields = inputters.get_fields(opt.data_type, src_nfeats, tgt_nfeats)
 
-    logger.info("Building & saving training data...")
-    train_dataset_files = build_save_dataset('train', fields, opt)
+    logger.info("Building training data...")
+    train_shards = build_datasets(opt.train_src, opt.train_tgt, fields, opt)
+    for i, shard in enumerate(train_shards):
+        logger.info("Building shard %d." % i)
+        for name, field in fields.items():
+            if field.use_vocab:
+                field.extend_vocab(shard)
+        data_path = "{:s}.{:s}.{:d}.pt".format(opt.save_data, 'train', i)
+        shard.save(data_path)
+        logger.info(" * saving %sth %s data shard to %s."
+                    % (i, 'train', data_path))
+        del shard.examples
+        gc.collect()
+        del shard
+        gc.collect()
 
-    logger.info("Building & saving validation data...")
-    build_save_dataset('valid', fields, opt)
+    logger.info("Building validation data...")
+    valid_shards = build_datasets(
+        opt.valid_src, opt.valid_tgt, fields, opt, opt.filter_valid)
+    for i, shard in enumerate(valid_shards):
+        logger.info("Building shard %d." % i)
+        data_path = "{:s}.{:s}.{:d}.pt".format(opt.save_data, 'valid', i)
+        shard.save(data_path)
+        logger.info(" * saving %sth %s data shard to %s."
+                    % (i, 'valid', data_path))
+        del shard.examples
+        gc.collect()
+        del shard
+        gc.collect()
 
-    logger.info("Building & saving vocabulary...")
-    build_save_vocab(train_dataset_files, fields, opt)
+    # things you still need to do with vocab: vocab size, min_freq, sharing
+    logger.info("Saving vocabulary...")
+    vocab_path = opt.save_data + '.vocab.pt'
+    torch.save(inputters.save_fields_to_vocab(fields), vocab_path)
 
 
 if __name__ == "__main__":
