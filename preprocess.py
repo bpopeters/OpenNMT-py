@@ -85,6 +85,40 @@ def build_datasets(src, tgt, fields, opt, use_filter_pred=True):
         yield dataset
 
 
+def filter_vocabs(opt, fields):
+    if not opt.share_vocab:
+        if opt.src_words_min_frequency or opt.src_vocab_size:
+            _filter_field_vocab(
+                fields['src'],
+                max_size=opt.src_vocab_size,
+                min_freq=opt.src_words_min_frequency)
+        if opt.tgt_words_min_frequency or opt.tgt_vocab_size:
+            _filter_field_vocab(
+                fields['tgt'],
+                max_size=opt.tgt_vocab_size,
+                min_freq=opt.tgt_words_min_frequency)
+    elif opt.src_words_min_frequency or opt.src_vocab_size:
+        # shared vocab case: values for src min freq and vocab size will be
+        # used for both src and tgt
+        _filter_field_vocab(
+            fields['src'],
+            max_size=opt.src_vocab_size,
+            min_freq=opt.src_words_min_frequency)
+
+
+def _filter_field_vocab(field, max_size=None, min_freq=0, **kwargs):
+    all_specials = [field.unk_token, field.pad_token,
+                    field.init_token, field.eos_token]
+    specials = [t for t in all_specials if t is not None]
+    freqs = field.vocab.freqs
+    field.vocab = field.vocab_cls(
+        freqs,
+        max_size=max_size,
+        min_freq=min_freq,
+        specials=specials,
+        **kwargs)
+
+
 def count_features(path):
     """
     path: location of a corpus file with whitespace-delimited tokens and
@@ -105,19 +139,6 @@ def _save_shard(shard, corpus_name, split_name, shard_name, delete=True):
         gc.collect()
         del shard
         gc.collect()
-
-
-def _filter_field_vocab(field, max_size=None, min_freq=0, **kwargs):
-    all_specials = [field.unk_token, field.pad_token,
-                    field.init_token, field.eos_token]
-    specials = [t for t in all_specials if t is not None]
-    freqs = field.vocab.freqs
-    field.vocab = field.vocab_cls(
-        freqs,
-        max_size=max_size,
-        min_freq=min_freq,
-        specials=specials,
-        **kwargs)
 
 
 def main():
@@ -167,24 +188,7 @@ def main():
 
     # things you still need to do with vocab: loading vocab
     logger.info("Saving vocabulary...")
-    if not opt.share_vocab:
-        if opt.src_words_min_frequency or opt.src_vocab_size:
-            _filter_field_vocab(
-                fields['src'],
-                max_size=opt.src_vocab_size,
-                min_freq=opt.src_words_min_frequency)
-        if opt.tgt_words_min_frequency or opt.tgt_vocab_size:
-            _filter_field_vocab(
-                fields['tgt'],
-                max_size=opt.tgt_vocab_size,
-                min_freq=opt.tgt_words_min_frequency)
-    elif opt.src_words_min_frequency or opt.src_vocab_size:
-        # shared vocab case: values for src min freq and vocab size will be
-        # used for both src and tgt
-        _filter_field_vocab(
-            fields['src'],
-            max_size=opt.src_vocab_size,
-            min_freq=opt.src_words_min_frequency)
+    filter_vocabs(opts, fields)
     for n, f in fields.items():
         if f.use_vocab:
             logger.info(' * {} vocabulary size = {}'.format(n, len(f.vocab)))
