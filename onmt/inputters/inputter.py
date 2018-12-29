@@ -110,7 +110,9 @@ def make_audio(data, vocab):
     return sounds
 
 
-def get_fields(src_data_type, n_src_features, n_tgt_features):
+def get_fields(
+    src_data_type, n_src_features, n_tgt_features, share_vocab=False
+):
     """
     Args:
         src_data_type: type of the source input. Options are [text|img|audio].
@@ -127,8 +129,20 @@ def get_fields(src_data_type, n_src_features, n_tgt_features):
         "Data type not implemented"
     fields = dict()
 
+    if share_vocab:
+        shared_field = Field(
+            init_token=BOS_WORD,
+            eos_token=EOS_WORD,
+            pad_token=PAD_WORD,
+            include_lengths=True)
+    else:
+        shared_field = None
+
     if src_data_type == 'text':
-        fields["src"] = Field(pad_token=PAD_WORD, include_lengths=True)
+        if shared_field is not None:
+            fields["src"] = shared_field
+        else:
+            fields["src"] = Field(pad_token=PAD_WORD, include_lengths=True)
         for i in range(n_src_features):
             fields["src_feat_" + str(i)] = Field(pad_token=PAD_WORD)
     elif src_data_type == 'img':
@@ -155,8 +169,11 @@ def get_fields(src_data_type, n_src_features, n_tgt_features):
             postprocessing=make_tgt, sequential=False)
 
     # below this: things defined no matter what the data source type is
-    fields["tgt"] = Field(
-        init_token=BOS_WORD, eos_token=EOS_WORD, pad_token=PAD_WORD)
+    if shared_field is not None:
+        fields["tgt"] = shared_field
+    else:
+        fields["tgt"] = Field(
+            init_token=BOS_WORD, eos_token=EOS_WORD, pad_token=PAD_WORD)
 
     for i in range(n_tgt_features):
         fields["tgt_feat_" + str(i)] = Field(

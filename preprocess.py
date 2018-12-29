@@ -146,7 +146,8 @@ def main():
     logger.info(" * number of target features: %d." % tgt_nfeats)
 
     logger.info("Building `Fields` object...")
-    fields = inputters.get_fields(opt.data_type, src_nfeats, tgt_nfeats)
+    fields = inputters.get_fields(
+        opt.data_type, src_nfeats, tgt_nfeats, opt.share_vocab)
 
     logger.info("Building training data...")
     train_shards = build_datasets(opt.train_src, opt.train_tgt, fields, opt)
@@ -164,18 +165,26 @@ def main():
         logger.info("Building shard %d." % i)
         _save_shard(shard, opt.save_data, 'valid', i)
 
-    # things you still need to do with vocab: sharing, loading vocab
+    # things you still need to do with vocab: loading vocab
     logger.info("Saving vocabulary...")
-    if opt.src_words_min_frequency or opt.src_vocab_size:
+    if not opt.share_vocab:
+        if opt.src_words_min_frequency or opt.src_vocab_size:
+            _filter_field_vocab(
+                fields['src'],
+                max_size=opt.src_vocab_size,
+                min_freq=opt.src_words_min_frequency)
+        if opt.tgt_words_min_frequency or opt.tgt_vocab_size:
+            _filter_field_vocab(
+                fields['tgt'],
+                max_size=opt.tgt_vocab_size,
+                min_freq=opt.tgt_words_min_frequency)
+    elif opt.src_words_min_frequency or opt.src_vocab_size:
+        # shared vocab case: values for src min freq and vocab size will be
+        # used for both src and tgt
         _filter_field_vocab(
             fields['src'],
             max_size=opt.src_vocab_size,
             min_freq=opt.src_words_min_frequency)
-    if opt.tgt_words_min_frequency or opt.tgt_vocab_size:
-        _filter_field_vocab(
-            fields['tgt'],
-            max_size=opt.tgt_vocab_size,
-            min_freq=opt.tgt_words_min_frequency)
     for n, f in fields.items():
         if f.use_vocab:
             logger.info(' * {} vocabulary size = {}'.format(n, len(f.vocab)))
