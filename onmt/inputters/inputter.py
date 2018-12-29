@@ -1,7 +1,5 @@
 # -*- coding: utf-8 -*-
 import glob
-import os
-import codecs
 
 from collections import Counter, defaultdict, OrderedDict
 from itertools import count, cycle, chain
@@ -321,23 +319,6 @@ def build_dataset(fields, data_type, src,
         fields, src_examples_iter, tgt_examples_iter,
         dynamic_dict=dynamic_dict, filter_pred=filter_pred)
     return dataset
-
-
-def load_vocabulary(vocab_path, tag):
-    """
-    Loads a vocabulary from the given path.
-    :param vocabulary_path: path to load vocabulary from
-    :param tag: tag for vocabulary (only used for logging)
-    :return: vocabulary or None if path is null
-    """
-    logger.info("Loading {} vocabulary from {}".format(tag, vocab_path))
-
-    if not os.path.exists(vocab_path):
-        raise RuntimeError(
-            "{} vocabulary not found at {}".format(tag, vocab_path))
-    else:
-        with codecs.open(vocab_path, 'r', 'utf-8') as f:
-            return [line.strip().split()[0] for line in f if line.strip()]
 
 
 class OrderedIterator(torchtext.data.Iterator):
