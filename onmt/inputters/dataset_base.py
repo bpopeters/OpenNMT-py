@@ -1,5 +1,7 @@
 # coding: utf-8
 
+from os.path import basename
+
 from itertools import chain
 from collections import Counter
 import codecs
@@ -131,3 +133,24 @@ class DatasetBase(Dataset):
         with codecs.open(path, "r", "utf-8") as f:
             for line in f:
                 yield line
+
+
+class SigmorphonDataset(Dataset):
+    def __init__(self, fields, paths, language_tag=False, filter_pred=None):
+        if isinstance(paths, str):
+            paths = [paths]
+        examples = []
+        for path in paths:
+            with open(path) as f:
+                for line in f:
+                    src, tgt, inflection = line.strip().split()
+                    ex_dict = {'src': src,
+                               'tgt': tgt,
+                               'inflection': inflection}
+                    if 'language' in fields:
+                        language = basename(path).split('-')[0]
+                        ex_dict['language'] = language
+                    ex = Example.fromdict(ex_dict, fields)
+                    examples.append(ex)
+        fields = dict(chain.from_iterable(fields.values()))
+        super(SigmorphonDataset, self).__init__(fields, examples, filter_pred)

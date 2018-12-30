@@ -171,14 +171,18 @@ def preprocess_opts(parser):
               help="""Type of the source input.
                        Options are [text|img].""")
 
-    group.add('--train_src', '-train_src', required=True,
+    group.add('--train_src', '-train_src',
               help="Path to the training source data")
-    group.add('--train_tgt', '-train_tgt', required=True,
+    group.add('--train_tgt', '-train_tgt',
               help="Path to the training target data")
-    group.add('--valid_src', '-valid_src', required=True,
+    group.add('--valid_src', '-valid_src',
               help="Path to the validation source data")
-    group.add('--valid_tgt', '-valid_tgt', required=True,
+    group.add('--valid_tgt', '-valid_tgt',
               help="Path to the validation target data")
+    group.add('--train', '-train',
+              help="Path to sigmorphon training data")
+    group.add('--valid', '-valid',
+              help="Path to sigmorphon validation data")
 
     group.add('--src_dir', '-src_dir', default="",
               help="Source directory for image or audio files.")

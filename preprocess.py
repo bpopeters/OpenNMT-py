@@ -16,6 +16,7 @@ from onmt.utils.logging import init_logger, logger
 
 import onmt.inputters as inputters
 import onmt.opts as opts
+from onmt.inputters.dataset_base import SigmorphonDataset
 
 
 def check_existing_pt_files(opt):
