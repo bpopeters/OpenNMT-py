@@ -136,6 +136,12 @@ class DatasetBase(Dataset):
 
 
 class SigmorphonDataset(Dataset):
+    @staticmethod
+    def sort_key(ex):
+        if hasattr(ex, "tgt"):
+            return len(ex.src), len(ex.tgt)
+        return len(ex.src)
+
     def __getstate__(self):
         return self.__dict__
 

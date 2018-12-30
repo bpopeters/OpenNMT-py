@@ -14,8 +14,7 @@ import torch
 
 import onmt.opts as opts
 
-from onmt.inputters.inputter import build_dataset_iter, \
-    load_fields_from_vocab, old_style_vocab
+from onmt.inputters.inputter import build_dataset_iter
 from onmt.model_builder import build_model
 from onmt.utils.optimizers import build_optim
 from onmt.trainer import build_trainer
@@ -107,28 +106,18 @@ def main(opt, device_id):
         model_opt = default_opt
         model_opt.__dict__.update(checkpoint['opt'].__dict__)
         logger.info('Loading vocab from checkpoint at %s.' % opt.train_from)
-        vocab = checkpoint['vocab']
+        fields = checkpoint['vocab']
     else:
         checkpoint = None
         model_opt = opt
-        vocab = torch.load(opt.data + '.vocab.pt')
+        fields = torch.load(opt.data + '.vocab.pt')
 
-    # Load a shard dataset to determine the data_type.
-    # (All datasets have the same data_type).
-    # this should be refactored out of existence reasonably soon
-    first_dataset = torch.load(glob.glob(opt.data + '.train*.pt')[0])
-    data_type = first_dataset.data_type
-
-    # check for code where vocab is saved instead of fields
-    # (in the future this will be done in a smarter way
-    if old_style_vocab(vocab):
-        fields = load_fields_from_vocab(vocab, data_type)
-    else:
-        fields = vocab
+    train_dataset = torch.load(opt.data + '.train.0.pt')
+    valid_dataset = torch.load(opt.data + '.valid.0.pt')
 
     # Report src and tgt vocab sizes, including for features
-    for side in ['src', 'tgt']:
-        for name, f in fields[side]:
+    for key, values in fields.items():
+        for name, f in values:
             if f.use_vocab:
                 logger.info(' * %s vocab size = %d' % (name, len(f.vocab)))
 
@@ -147,7 +136,7 @@ def main(opt, device_id):
     model_saver = build_model_saver(model_opt, opt, model, fields, optim)
 
     trainer = build_trainer(opt, device_id, model, fields,
-                            optim, data_type, model_saver=model_saver)
+                            optim, model_saver=model_saver)
 
     # this line is kind of a temporary kludge because different objects expect
     # fields to have a different structure
