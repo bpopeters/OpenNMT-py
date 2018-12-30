@@ -1,17 +1,11 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
-"""
-    Pre-process Data / features files and build vocabulary
-"""
 
 import configargparse
 import glob
 import sys
-import gc
-import os
-import codecs
-from itertools import islice
 import torch
+
 from onmt.utils.logging import init_logger, logger
 
 import onmt.inputters as inputters
@@ -48,88 +42,6 @@ def parse_args():
     return opt
 
 
-def split_corpus(path, shard_size):
-    with codecs.open(path, "r", encoding="utf-8") as f:
-        while True:
-            shard = list(islice(f, shard_size))
-            if not shard:
-                break
-            yield shard
-
-
-def build_save_dataset(corpus_type, fields, opt):
-    assert corpus_type in ['train', 'valid']
-
-    if corpus_type == 'train':
-        src = opt.train_src
-        tgt = opt.train_tgt
-    else:
-        src = opt.valid_src
-        tgt = opt.valid_tgt
-
-    logger.info("Reading source and target files: %s %s." % (src, tgt))
-
-    src_shards = split_corpus(src, opt.shard_size)
-    tgt_shards = split_corpus(tgt, opt.shard_size)
-    shard_pairs = zip(src_shards, tgt_shards)
-    dataset_paths = []
-
-    for i, (src_shard, tgt_shard) in enumerate(shard_pairs):
-        assert len(src_shard) == len(tgt_shard)
-        logger.info("Building shard %d." % i)
-        dataset = inputters.build_dataset(
-            fields, opt.data_type,
-            src=src_shard,
-            tgt=tgt_shard,
-            src_dir=opt.src_dir,
-            src_seq_len=opt.src_seq_length,
-            tgt_seq_len=opt.tgt_seq_length,
-            sample_rate=opt.sample_rate,
-            window_size=opt.window_size,
-            window_stride=opt.window_stride,
-            window=opt.window,
-            image_channel_size=opt.image_channel_size,
-            use_filter_pred=corpus_type == 'train' or opt.filter_valid
-        )
-
-        data_path = "{:s}.{:s}.{:d}.pt".format(opt.save_data, corpus_type, i)
-        dataset_paths.append(data_path)
-
-        logger.info(" * saving %sth %s data shard to %s."
-                    % (i, corpus_type, data_path))
-
-        dataset.save(data_path)
-
-        del dataset.examples
-        gc.collect()
-        del dataset
-        gc.collect()
-
-    return dataset_paths
-
-
-def build_save_vocab(train_dataset, fields, opt):
-    fields = inputters.build_vocab(
-        train_dataset, fields, opt.data_type, opt.share_vocab,
-        opt.src_vocab, opt.src_vocab_size, opt.src_words_min_frequency,
-        opt.tgt_vocab, opt.tgt_vocab_size, opt.tgt_words_min_frequency
-    )
-
-    vocab_path = opt.save_data + '.vocab.pt'
-    torch.save(fields, vocab_path)
-
-
-def count_features(path):
-    """
-    path: location of a corpus file with whitespace-delimited tokens and
-                    ￨-delimited features within the token
-    returns: the number of features in the dataset
-    """
-    with codecs.open(path, "r", "utf-8") as f:
-        first_tok = f.readline().split(None, 1)[0]
-        return len(first_tok.split(u"￨")) - 1
-
-
 def main():
     opt = parse_args()
 
@@ -140,38 +52,38 @@ def main():
         "-shuffle is not implemented. Please shuffle \
         your data before pre-processing."
 
-    assert os.path.isfile(opt.train_src) and os.path.isfile(opt.train_tgt), \
-        "Please check path of your train src and tgt files!"
-
-    assert os.path.isfile(opt.valid_src) and os.path.isfile(opt.valid_tgt), \
-        "Please check path of your valid src and tgt files!"
-
     init_logger(opt.log_file)
-    logger.info("Extracting features...")
-
-    src_nfeats = count_features(opt.train_src) if opt.data_type == 'text' \
-        else 0
-    tgt_nfeats = count_features(opt.train_tgt)  # tgt always text so far
-    logger.info(" * number of source features: %d." % src_nfeats)
-    logger.info(" * number of target features: %d." % tgt_nfeats)
 
     logger.info("Building `Fields` object...")
     fields = inputters.get_fields(
-        opt.data_type,
-        src_nfeats,
-        tgt_nfeats,
-        dynamic_dict=opt.dynamic_dict,
-        src_truncate=opt.src_seq_length_trunc,
-        tgt_truncate=opt.tgt_seq_length_trunc)
+        language=opt.multilingual, share_vocab=opt.share_vocab)
 
-    logger.info("Building & saving training data...")
-    train_dataset_files = build_save_dataset('train', fields, opt)
+    # make datasets
+    train_dataset = SigmorphonDataset(fields, opt.train)
+    logger.info('Train set size: {}'.format(len(train_dataset)))
+    valid_dataset = SigmorphonDataset(fields, opt.valid)
+    logger.info('Validation set size: {}'.format(len(valid_dataset)))
 
-    logger.info("Building & saving validation data...")
-    build_save_dataset('valid', fields, opt)
+    # build vocab
+    for in_label, column_fields in fields.items():
+        for name, field in column_fields:
+            if field.use_vocab:
+                field.build_vocab(train_dataset)
 
-    logger.info("Building & saving vocabulary...")
-    build_save_vocab(train_dataset_files, fields, opt)
+    # log some stuff
+    src_vocab_size = len(fields['src'][0][1].vocab)
+    tgt_vocab_size = len(fields['tgt'][0][1].vocab)
+    logger.info("Vocab sizes: src {} ; tgt {}".format(
+        src_vocab_size, tgt_vocab_size))
+    inflection_vocab_size = len(fields['inflection'][0][1].vocab)
+    logger.info("Unique inflectional tags: {}".format(inflection_vocab_size))
+    if 'language' in fields:
+        n_languages = len(fields['language'][0][1].vocab)
+        logger.info("Number of languages: {}".format(n_languages))
+
+    train_dataset.save(opt.save_data + '.train.0.pt')
+    valid_dataset.save(opt.save_data + '.valid.0.pt')
+    torch.save(fields, opt.save_data + '.vocab.pt')
 
 
 if __name__ == "__main__":

@@ -83,15 +83,7 @@ def _feature_tokenize(
 
 
 def get_fields(
-    src_data_type,
-    n_src_feats,
-    n_tgt_feats,
-    pad='<blank>',
-    bos='<s>',
-    eos='</s>',
-    dynamic_dict=False,
-    src_truncate=None,
-    tgt_truncate=None
+    pad='<blank>', bos='<s>', eos='</s>', language=False, share_vocab=False
 ):
     """
     src_data_type: type of the source input. Options are [text|img|audio].
@@ -104,71 +96,31 @@ def get_fields(
         pairs, where the name is a string which will become the name of
         an attribute of an example.
     """
-    assert src_data_type in ['text', 'img', 'audio'], \
-        "Data type not implemented"
-    assert not dynamic_dict or src_data_type == 'text', \
-        'it is not possible to use dynamic_dict with non-text input'
-    fields = {'src': [], 'tgt': []}
+    fields = {'src': [], 'tgt': [], 'inflection': []}
 
-    if src_data_type == 'text':
-        feat_delim = u"￨" if n_src_feats > 0 else None
-        for i in range(n_src_feats + 1):
-            name = "src_feat_" + str(i - 1) if i > 0 else "src"
-            tokenize = partial(
-                _feature_tokenize,
-                layer=i,
-                truncate=src_truncate,
-                feat_delim=feat_delim)
-            use_len = i == 0
-            feat = Field(
-                pad_token=pad, tokenize=tokenize, include_lengths=use_len)
-            fields['src'].append((name, feat))
-    elif src_data_type == 'img':
-        img = Field(
-            use_vocab=False, dtype=torch.float,
-            postprocessing=make_img, sequential=False)
-        fields["src"].append(('src', img))
+    if not share_vocab:
+        src = Field(pad_token=pad, tokenize=list, include_lengths=True)
+        tgt = Field(
+            init_token=bos, eos_token=eos, pad_token=pad, tokenize=list)
     else:
-        audio = Field(
-            use_vocab=False, dtype=torch.float,
-            postprocessing=make_audio, sequential=False)
-        fields["src"].append(('src', audio))
+        src = Field(
+            init_token=bos, eos_token=eos, pad_token=pad,
+            tokenize=list, include_lengths=True)
+        tgt = src
 
-    if src_data_type == 'audio':
-        # only audio has src_lengths
-        length = Field(use_vocab=False, dtype=torch.long, sequential=False)
-        fields["src_lengths"] = [("src_lengths", length)]
+    tokenize_infl = partial(str.split, sep=';')
+    infl = Field(pad_token=pad, tokenize=tokenize_infl)
 
-    # below this: things defined no matter what the data source type is
-    feat_delim = u"￨" if n_tgt_feats > 0 else None
-    for i in range(n_tgt_feats + 1):
-        name = "tgt_feat_" + str(i - 1) if i > 0 else "tgt"
-        tokenize = partial(
-            _feature_tokenize,
-            layer=i,
-            truncate=tgt_truncate,
-            feat_delim=feat_delim)
+    fields['src'].append(('src', src))
+    fields['tgt'].append(('tgt', tgt))
+    fields['inflection'].append(('inflection', infl))
 
-        feat = Field(
-            init_token=bos,
-            eos_token=eos,
-            pad_token=pad,
-            tokenize=tokenize)
-        fields['tgt'].append((name, feat))
+    if language:
+        lang = Field(sequential=False)
+        fields['language'] = [('language', lang)]
 
-    indices = Field(use_vocab=False, dtype=torch.long, sequential=False)
-    fields["indices"] = [('indices', indices)]
-
-    if dynamic_dict:
-        src_map = Field(
-            use_vocab=False, dtype=torch.float,
-            postprocessing=make_src, sequential=False)
-        fields["src_map"] = [("src_map", src_map)]
-
-        align = Field(
-            use_vocab=False, dtype=torch.long,
-            postprocessing=make_tgt, sequential=False)
-        fields["alignment"] = [('alignment', align)]
+    # indices = Field(use_vocab=False, dtype=torch.long, sequential=False)
+    # fields["indices"] = [('indices', indices)]
 
     return fields
 

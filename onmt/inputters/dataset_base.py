@@ -136,14 +136,24 @@ class DatasetBase(Dataset):
 
 
 class SigmorphonDataset(Dataset):
-    def __init__(self, fields, paths, language_tag=False, filter_pred=None):
+    def __getstate__(self):
+        return self.__dict__
+
+    def __setstate__(self, _d):
+        self.__dict__.update(_d)
+
+    def __reduce_ex__(self, proto):
+        # This is a hack. Something is broken with torch pickle.
+        return super(SigmorphonDataset, self).__reduce_ex__()
+
+    def __init__(self, fields, paths, filter_pred=None):
         if isinstance(paths, str):
             paths = [paths]
         examples = []
         for path in paths:
             with open(path) as f:
                 for line in f:
-                    src, tgt, inflection = line.strip().split()
+                    src, tgt, inflection = line.strip().split('\t')
                     ex_dict = {'src': src,
                                'tgt': tgt,
                                'inflection': inflection}
@@ -153,4 +163,9 @@ class SigmorphonDataset(Dataset):
                     ex = Example.fromdict(ex_dict, fields)
                     examples.append(ex)
         fields = dict(chain.from_iterable(fields.values()))
-        super(SigmorphonDataset, self).__init__(fields, examples, filter_pred)
+        super(SigmorphonDataset, self).__init__(examples, fields, filter_pred)
+
+    def save(self, path, remove_fields=True):
+        if remove_fields:
+            self.fields = []
+        torch.save(self, path)

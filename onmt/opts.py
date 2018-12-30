@@ -179,9 +179,9 @@ def preprocess_opts(parser):
               help="Path to the validation source data")
     group.add('--valid_tgt', '-valid_tgt',
               help="Path to the validation target data")
-    group.add('--train', '-train',
+    group.add('--train', '-train', nargs='+',
               help="Path to sigmorphon training data")
-    group.add('--valid', '-valid',
+    group.add('--valid', '-valid', nargs='+',
               help="Path to sigmorphon validation data")
 
     group.add('--src_dir', '-src_dir', default="",
@@ -244,6 +244,8 @@ def preprocess_opts(parser):
     group.add('--lower', '-lower', action='store_true', help='lowercase data')
     group.add('--filter_valid', '-filter_valid', action='store_true',
               help='Filter validation data by src and/or tgt length')
+    group.add('--multilingual', '-multilingual', action='store_true',
+              help="Add a language tag (parsed from filename) to each sample")
 
     # Data processing options
     group = parser.add_argument_group('Random')
