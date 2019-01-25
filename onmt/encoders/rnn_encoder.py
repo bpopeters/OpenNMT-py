@@ -54,13 +54,10 @@ class RNNEncoder(EncoderBase):
 
         emb = self.embeddings(src)
 
-        packed_emb = emb
         if lengths is not None and not self.no_pack_padded_seq:
-            # Lengths data is wrapped inside a Tensor.
-            lengths_list = lengths.view(-1).tolist()
-            packed_emb = pack(emb, lengths_list)
+            emb = pack(emb, lengths)
 
-        memory_bank, encoder_final = self.rnn(packed_emb)
+        memory_bank, encoder_final = self.rnn(emb)
 
         if lengths is not None and not self.no_pack_padded_seq:
             memory_bank = unpack(memory_bank)[0]
