@@ -1,6 +1,4 @@
-"""Define RNN-based encoders."""
 import torch.nn as nn
-import torch.nn.functional as F
 
 from torch.nn.utils.rnn import pack_padded_sequence as pack
 from torch.nn.utils.rnn import pad_packed_sequence as unpack
@@ -33,27 +31,28 @@ class RNNEncoder(EncoderBase):
         hidden_size = hidden_size // num_directions
         self.embeddings = embeddings
 
-        self.rnn, self.no_pack_padded_seq = \
-            rnn_factory(rnn_type,
-                        input_size=embeddings.embedding_size,
-                        hidden_size=hidden_size,
-                        num_layers=num_layers,
-                        dropout=dropout,
-                        bidirectional=bidirectional)
+        self.rnn, self.no_pack_padded_seq = rnn_factory(
+            rnn_type,
+            input_size=embeddings.embedding_size,
+            hidden_size=hidden_size,
+            num_layers=num_layers,
+            dropout=dropout,
+            bidirectional=bidirectional)
 
         # Initialize the bridge layer
-        self.use_bridge = use_bridge
-        if self.use_bridge:
-            self._initialize_bridge(rnn_type,
-                                    hidden_size,
-                                    num_layers)
+        if use_bridge:
+            num_states = 2 if rnn_type == "LSTM" else 1
+            self.bridge = nn.ModuleList(
+                [Bridge(hidden_size * num_layers) for i in range(num_states)]
+            )
+        else:
+            self.bridge = None
 
     def forward(self, src, lengths=None):
         "See :obj:`EncoderBase.forward()`"
         self._check_args(src, lengths)
 
         emb = self.embeddings(src)
-        # s_len, batch, emb_dim = emb.size()
 
         packed_emb = emb
         if lengths is not None and not self.no_pack_padded_seq:
@@ -66,40 +65,25 @@ class RNNEncoder(EncoderBase):
         if lengths is not None and not self.no_pack_padded_seq:
             memory_bank = unpack(memory_bank)[0]
 
-        if self.use_bridge:
-            encoder_final = self._bridge(encoder_final)
+        if self.bridge is not None:
+            if isinstance(encoder_final, tuple):  # LSTM
+                encoder_final = tuple(layer(enc_state)
+                                      for enc_state, layer
+                                      in zip(encoder_final, self.bridge))
+            else:
+                encoder_final = self.bridge[0](encoder_final)
         return encoder_final, memory_bank, lengths
 
-    def _initialize_bridge(self, rnn_type,
-                           hidden_size,
-                           num_layers):
 
-        # LSTM has hidden and cell state, other only one
-        number_of_states = 2 if rnn_type == "LSTM" else 1
-        # Total number of states
-        self.total_hidden_dim = hidden_size * num_layers
+class Bridge(nn.Module):
+    def __init__(self, bridge_size):
+        super(Bridge, self).__init__()
+        self.dense_layer = nn.Sequential(
+            nn.Linear(bridge_size, bridge_size), nn.ReLU()
+        )
 
-        # Build a linear layer for each
-        self.bridge = nn.ModuleList([nn.Linear(self.total_hidden_dim,
-                                               self.total_hidden_dim,
-                                               bias=True)
-                                     for _ in range(number_of_states)])
-
-    def _bridge(self, hidden):
-        """
-        Forward hidden state through bridge
-        """
-        def bottle_hidden(linear, states):
-            """
-            Transform from 3D to 2D, apply linear and return initial size
-            """
-            size = states.size()
-            result = linear(states.view(-1, self.total_hidden_dim))
-            return F.relu(result).view(size)
-
-        if isinstance(hidden, tuple):  # LSTM
-            outs = tuple([bottle_hidden(layer, hidden[ix])
-                          for ix, layer in enumerate(self.bridge)])
-        else:
-            outs = bottle_hidden(self.bridge[0], hidden)
-        return outs
+    def forward(self, enc_state):
+        unbottled_size = enc_state.size()
+        total_dim = self.dense_layer[0].in_features
+        out = self.dense_layer(enc_state.view(-1, total_dim))
+        return out.view(unbottled_size)
