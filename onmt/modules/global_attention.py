@@ -10,6 +10,75 @@ from onmt.utils.misc import aeq, sequence_mask
 # Transformer has its own MultiHeadedAttention
 
 
+class MLPScorer(nn.Module):
+    def __init__(self, dim):
+        super(MLPScorer, self).__init__()
+        self.linear_context = nn.Linear(dim, dim, bias=False)
+        self.linear_query = nn.Linear(dim, dim, bias=True)
+        self.v = nn.Linear(dim, 1, bias=False)
+
+    def forward(self, h_t, h_s):
+        """
+        Args:
+          h_t (`FloatTensor`): sequence of queries `[batch x tgt_len x dim]`
+          h_s (`FloatTensor`): sequence of sources `[batch x src_len x dim]`
+
+        Returns:
+          :obj:`FloatTensor`:
+           raw attention scores (unnormalized) for each src index
+          `[batch x tgt_len x src_len]`
+        """
+        dim = self.linear_context.in_features
+        src_batch, src_len, src_dim = h_s.size()
+        tgt_batch, tgt_len, tgt_dim = h_t.size()
+        aeq(src_batch, tgt_batch)
+        aeq(src_dim, tgt_dim, dim)
+
+        wq = self.linear_query(h_t.view(-1, dim))
+        wq = wq.view(tgt_batch, tgt_len, 1, dim)
+        wq = wq.expand(tgt_batch, tgt_len, src_len, dim)
+
+        uh = self.linear_context(h_s.contiguous().view(-1, dim))
+        uh = uh.view(src_batch, 1, src_len, dim)
+        uh = uh.expand(src_batch, tgt_len, src_len, dim)
+
+        # (batch, t_len, s_len, d)
+        wquh = torch.tanh(wq + uh)
+
+        return self.v(wquh.view(-1, dim)).view(tgt_batch, tgt_len, src_len)
+
+
+class DotScorer(nn.Module):
+    def __init__(self):
+        super(DotScorer, self).__init__()
+
+    def forward(self, h_t, h_s):
+        src_batch, src_len, src_dim = h_s.size()
+        tgt_batch, tgt_len, tgt_dim = h_t.size()
+        aeq(src_batch, tgt_batch)
+        aeq(src_dim, tgt_dim)
+
+        return torch.bmm(h_t, h_s.transpose(1, 2))
+
+
+class GeneralScorer(nn.Module):
+    def __init__(self, dim):
+        super(GeneralScorer, self).__init__()
+        self.linear_in = nn.Linear(dim, dim, bias=False)
+
+    def forward(self, h_t, h_s):
+        src_batch, src_len, src_dim = h_s.size()
+        tgt_batch, tgt_len, tgt_dim = h_t.size()
+        aeq(src_batch, tgt_batch)
+        aeq(src_dim, tgt_dim)
+
+        h_t_ = h_t.view(tgt_batch * tgt_len, tgt_dim)
+        h_t_ = self.linear_in(h_t_)
+        h_t = h_t_.view(tgt_batch, tgt_len, tgt_dim)
+
+        return torch.bmm(h_t, h_s.transpose(1, 2))
+
+
 class GlobalAttention(nn.Module):
     """
     Global attention takes a matrix and a query vector. It
@@ -71,7 +140,6 @@ class GlobalAttention(nn.Module):
 
         assert attn_type in ["dot", "general", "mlp"], (
             "Please select a valid attention type.")
-        self.attn_type = attn_type
         assert attn_func in ["softmax", "sparsemax"], (
             "Please select a valid attention function.")
         if attn_func == "softmax":
@@ -79,60 +147,18 @@ class GlobalAttention(nn.Module):
         else:
             self.attn_func = Sparsemax(dim=-1)
 
-        if self.attn_type == "general":
-            self.linear_in = nn.Linear(dim, dim, bias=False)
-        elif self.attn_type == "mlp":
-            self.linear_context = nn.Linear(dim, dim, bias=False)
-            self.linear_query = nn.Linear(dim, dim, bias=True)
-            self.v = nn.Linear(dim, 1, bias=False)
         # mlp wants it with bias
         out_bias = attn_type == "mlp"
         self.linear_out = nn.Linear(dim * 2, dim, bias=out_bias)
+        if attn_type == "mlp":
+            self.score = MLPScorer(dim)
+        elif attn_type == "dot":
+            self.score = DotScorer()
+        else:
+            self.score = GeneralScorer(dim)
 
         if coverage:
             self.linear_cover = nn.Linear(1, dim, bias=False)
-
-    def score(self, h_t, h_s):
-        """
-        Args:
-          h_t (`FloatTensor`): sequence of queries `[batch x tgt_len x dim]`
-          h_s (`FloatTensor`): sequence of sources `[batch x src_len x dim]`
-
-        Returns:
-          :obj:`FloatTensor`:
-           raw attention scores (unnormalized) for each src index
-          `[batch x tgt_len x src_len]`
-
-        """
-
-        # Check input sizes
-        src_batch, src_len, src_dim = h_s.size()
-        tgt_batch, tgt_len, tgt_dim = h_t.size()
-        aeq(src_batch, tgt_batch)
-        aeq(src_dim, tgt_dim)
-
-        if self.attn_type in ["general", "dot"]:
-            if self.attn_type == "general":
-                h_t_ = h_t.view(tgt_batch * tgt_len, tgt_dim)
-                h_t_ = self.linear_in(h_t_)
-                h_t = h_t_.view(tgt_batch, tgt_len, tgt_dim)
-            h_s_ = h_s.transpose(1, 2)
-            # (batch, t_len, d) x (batch, d, s_len) --> (batch, t_len, s_len)
-            return torch.bmm(h_t, h_s_)
-        else:
-            dim = src_dim
-            wq = self.linear_query(h_t.view(-1, dim))
-            wq = wq.view(tgt_batch, tgt_len, 1, dim)
-            wq = wq.expand(tgt_batch, tgt_len, src_len, dim)
-
-            uh = self.linear_context(h_s.contiguous().view(-1, dim))
-            uh = uh.view(src_batch, 1, src_len, dim)
-            uh = uh.expand(src_batch, tgt_len, src_len, dim)
-
-            # (batch, t_len, s_len, d)
-            wquh = torch.tanh(wq + uh)
-
-            return self.v(wquh.view(-1, dim)).view(tgt_batch, tgt_len, src_len)
 
     def forward(self, source, memory_bank, memory_lengths=None, coverage=None):
         """
@@ -164,8 +190,6 @@ class GlobalAttention(nn.Module):
             batch_, source_l_ = coverage.size()
             aeq(batch, batch_)
             aeq(source_l, source_l_)
-
-        if coverage is not None:
             cover = coverage.view(-1).unsqueeze(1)
             memory_bank += self.linear_cover(cover).view_as(memory_bank)
             memory_bank = torch.tanh(memory_bank)
@@ -184,14 +208,15 @@ class GlobalAttention(nn.Module):
         align_vectors = self.attn_func(align)
         align_vectors = align_vectors.view(batch, target_l, source_l)
 
-        # each context vector c_t is the weighted average
-        # over all the source hidden states
+        # each context vector c_t is the weighted average over source states
         c = torch.bmm(align_vectors, memory_bank)
 
         # concatenate
         concat_c = torch.cat([c, source], 2).view(batch * target_l, dim * 2)
         attn_h = self.linear_out(concat_c).view(batch, target_l, dim)
-        if self.attn_type in ["general", "dot"]:
+
+        if not isinstance(self.score, MLPScorer):
+            # just a temporary check
             attn_h = torch.tanh(attn_h)
 
         if one_step:
