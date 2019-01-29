@@ -149,7 +149,18 @@ class GlobalAttention(nn.Module):
 
         # mlp wants it with bias
         out_bias = attn_type == "mlp"
-        self.linear_out = nn.Linear(dim * 2, dim, bias=out_bias)
+        linear_out = nn.Linear(dim * 2, dim, bias=out_bias)
+
+        # eventually out_activation should be an argument
+        # (but it's hard-coded for now so as not to mess with the interface
+        # for creating an instance)
+        out_activation = nn.Tanh() if attn_type != "mlp" else None
+
+        if out_activation is not None:
+            self.output_layer = nn.Sequential(linear_out, out_activation)
+        else:
+            self.output_layer = linear_out
+
         if attn_type == "mlp":
             self.score = MLPScorer(dim)
         elif attn_type == "dot":
@@ -199,8 +210,7 @@ class GlobalAttention(nn.Module):
 
         if memory_lengths is not None:
             mask = sequence_mask(memory_lengths, max_len=align.size(-1))
-            mask = mask.unsqueeze(1)  # Make it broadcastable.
-            align.masked_fill_(1 - mask, -float('inf'))
+            align.masked_fill_(1 - mask.unsqueeze(1), -float('inf'))
 
         # turning this into a 2d tensor is still necessary because something
         # is broken with sparsemax and it cannot handle a 3d tensor
@@ -213,12 +223,9 @@ class GlobalAttention(nn.Module):
 
         # concatenate
         concat_c = torch.cat([c, source], 2).view(batch * target_l, dim * 2)
-        attn_h = self.linear_out(concat_c).view(batch, target_l, dim)
+        attn_h = self.output_layer(concat_c).view(batch, target_l, dim)
 
-        if not isinstance(self.score, MLPScorer):
-            # just a temporary check
-            attn_h = torch.tanh(attn_h)
-
+        # figure out what is going on with these checks
         if one_step:
             attn_h = attn_h.squeeze(1)
             align_vectors = align_vectors.squeeze(1)
