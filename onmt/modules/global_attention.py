@@ -1,9 +1,7 @@
-""" Global attention modules (Luong / Bahdanau) """
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 
-from onmt.modules.sparse_activations import sparsemax
+from onmt.modules.sparse_activations import Sparsemax
 from onmt.utils.misc import aeq, sequence_mask
 
 # This class is mainly used by decoder.py for RNNs but also
@@ -71,13 +69,15 @@ class GlobalAttention(nn.Module):
                  attn_func="softmax"):
         super(GlobalAttention, self).__init__()
 
-        self.dim = dim
         assert attn_type in ["dot", "general", "mlp"], (
             "Please select a valid attention type.")
         self.attn_type = attn_type
         assert attn_func in ["softmax", "sparsemax"], (
             "Please select a valid attention function.")
-        self.attn_func = attn_func
+        if attn_func == "softmax":
+            self.attn_func = nn.Softmax(dim=-1)
+        else:
+            self.attn_func = Sparsemax(dim=-1)
 
         if self.attn_type == "general":
             self.linear_in = nn.Linear(dim, dim, bias=False)
@@ -86,7 +86,7 @@ class GlobalAttention(nn.Module):
             self.linear_query = nn.Linear(dim, dim, bias=True)
             self.v = nn.Linear(dim, 1, bias=False)
         # mlp wants it with bias
-        out_bias = self.attn_type == "mlp"
+        out_bias = attn_type == "mlp"
         self.linear_out = nn.Linear(dim * 2, dim, bias=out_bias)
 
         if coverage:
@@ -110,7 +110,6 @@ class GlobalAttention(nn.Module):
         tgt_batch, tgt_len, tgt_dim = h_t.size()
         aeq(src_batch, tgt_batch)
         aeq(src_dim, tgt_dim)
-        aeq(self.dim, src_dim)
 
         if self.attn_type in ["general", "dot"]:
             if self.attn_type == "general":
@@ -121,7 +120,7 @@ class GlobalAttention(nn.Module):
             # (batch, t_len, d) x (batch, d, s_len) --> (batch, t_len, s_len)
             return torch.bmm(h_t, h_s_)
         else:
-            dim = self.dim
+            dim = src_dim
             wq = self.linear_query(h_t.view(-1, dim))
             wq = wq.view(tgt_batch, tgt_len, 1, dim)
             wq = wq.expand(tgt_batch, tgt_len, src_len, dim)
@@ -153,17 +152,14 @@ class GlobalAttention(nn.Module):
         """
 
         # one step input
-        if source.dim() == 2:
-            one_step = True
+        one_step = source.dim() == 2
+        if one_step:
             source = source.unsqueeze(1)
-        else:
-            one_step = False
 
         batch, source_l, dim = memory_bank.size()
         batch_, target_l, dim_ = source.size()
         aeq(batch, batch_)
         aeq(dim, dim_)
-        aeq(self.dim, dim)
         if coverage is not None:
             batch_, source_l_ = coverage.size()
             aeq(batch, batch_)
@@ -182,11 +178,10 @@ class GlobalAttention(nn.Module):
             mask = mask.unsqueeze(1)  # Make it broadcastable.
             align.masked_fill_(1 - mask, -float('inf'))
 
-        # Softmax or sparsemax to normalize attention weights
-        if self.attn_func == "softmax":
-            align_vectors = F.softmax(align.view(batch*target_l, source_l), -1)
-        else:
-            align_vectors = sparsemax(align.view(batch*target_l, source_l), -1)
+        # turning this into a 2d tensor is still necessary because something
+        # is broken with sparsemax and it cannot handle a 3d tensor
+        align = align.view(batch * target_l, source_l)
+        align_vectors = self.attn_func(align)
         align_vectors = align_vectors.view(batch, target_l, source_l)
 
         # each context vector c_t is the weighted average
@@ -194,7 +189,7 @@ class GlobalAttention(nn.Module):
         c = torch.bmm(align_vectors, memory_bank)
 
         # concatenate
-        concat_c = torch.cat([c, source], 2).view(batch*target_l, dim*2)
+        concat_c = torch.cat([c, source], 2).view(batch * target_l, dim * 2)
         attn_h = self.linear_out(concat_c).view(batch, target_l, dim)
         if self.attn_type in ["general", "dot"]:
             attn_h = torch.tanh(attn_h)
