@@ -1,13 +1,13 @@
+"""
+GlobalAttention mechanism is the primary attention mechanism for RNNs.
+It is also used for copy attention for both RNNs and CNNs.
+"""
+
 import torch
 import torch.nn as nn
 
 from onmt.modules.sparse_activations import Sparsemax
 from onmt.utils.misc import aeq, sequence_mask
-
-# This class is mainly used by decoder.py for RNNs but also
-# by the CNN / transformer decoder when copy attention is used
-# CNN has its own attention mechanism ConvMultiStepAttention
-# Transformer has its own MultiHeadedAttention
 
 
 class MLPScorer(nn.Module):
@@ -28,24 +28,15 @@ class MLPScorer(nn.Module):
            raw attention scores (unnormalized) for each src index
           `[batch x tgt_len x src_len]`
         """
-        dim = self.linear_context.in_features
-        src_batch, src_len, src_dim = h_s.size()
-        tgt_batch, tgt_len, tgt_dim = h_t.size()
-        aeq(src_batch, tgt_batch)
-        aeq(src_dim, tgt_dim, dim)
+        wq = self.linear_query(h_t).unsqueeze(2)
+        wq = wq.expand(-1, -1, h_s.size(1), -1)
 
-        wq = self.linear_query(h_t.view(-1, dim))
-        wq = wq.view(tgt_batch, tgt_len, 1, dim)
-        wq = wq.expand(tgt_batch, tgt_len, src_len, dim)
+        uh = self.linear_context(h_s).unsqueeze(1)
+        uh = uh.expand(-1, h_t.size(1), -1, -1)
 
-        uh = self.linear_context(h_s.contiguous().view(-1, dim))
-        uh = uh.view(src_batch, 1, src_len, dim)
-        uh = uh.expand(src_batch, tgt_len, src_len, dim)
-
-        # (batch, t_len, s_len, d)
         wquh = torch.tanh(wq + uh)
 
-        return self.v(wquh.view(-1, dim)).view(tgt_batch, tgt_len, src_len)
+        return self.v(wquh).squeeze(3)
 
 
 class DotScorer(nn.Module):
@@ -53,11 +44,6 @@ class DotScorer(nn.Module):
         super(DotScorer, self).__init__()
 
     def forward(self, h_t, h_s):
-        src_batch, src_len, src_dim = h_s.size()
-        tgt_batch, tgt_len, tgt_dim = h_t.size()
-        aeq(src_batch, tgt_batch)
-        aeq(src_dim, tgt_dim)
-
         return torch.bmm(h_t, h_s.transpose(1, 2))
 
 
@@ -67,15 +53,7 @@ class GeneralScorer(nn.Module):
         self.linear_in = nn.Linear(dim, dim, bias=False)
 
     def forward(self, h_t, h_s):
-        src_batch, src_len, src_dim = h_s.size()
-        tgt_batch, tgt_len, tgt_dim = h_t.size()
-        aeq(src_batch, tgt_batch)
-        aeq(src_dim, tgt_dim)
-
-        h_t_ = h_t.view(tgt_batch * tgt_len, tgt_dim)
-        h_t_ = self.linear_in(h_t_)
-        h_t = h_t_.view(tgt_batch, tgt_len, tgt_dim)
-
+        h_t = self.linear_in(h_t)
         return torch.bmm(h_t, h_s.transpose(1, 2))
 
 
@@ -129,15 +107,15 @@ class GlobalAttention(nn.Module):
 
     Args:
        dim (int): dimensionality of query and key
-       coverage (bool): use coverage term
+       coverage (bool): NOT IMPLEMENTED
        attn_type (str): type of attention to use, options [dot,general,mlp]
-
     """
 
     def __init__(self, dim, coverage=False, attn_type="dot",
                  attn_func="softmax"):
         super(GlobalAttention, self).__init__()
 
+        assert not coverage, "Coverage attention is not implemented"
         assert attn_type in ["dot", "general", "mlp"], (
             "Please select a valid attention type.")
         assert attn_func in ["softmax", "sparsemax"], (
@@ -168,17 +146,16 @@ class GlobalAttention(nn.Module):
         else:
             self.score = GeneralScorer(dim)
 
-        if coverage:
-            self.linear_cover = nn.Linear(1, dim, bias=False)
+        # if coverage:
+        #    self.linear_cover = nn.Linear(1, dim, bias=False)
 
-    def forward(self, source, memory_bank, memory_lengths=None, coverage=None):
+    def forward(self, query, memory_bank, memory_lengths=None, coverage=None):
         """
-
         Args:
-          source (`FloatTensor`): query vectors `[batch x tgt_len x dim]`
+          query (`FloatTensor`): query vectors `[batch x tgt_len x dim]`
           memory_bank (`FloatTensor`): source vectors `[batch x src_len x dim]`
           memory_lengths (`LongTensor`): the source context lengths `[batch]`
-          coverage (`FloatTensor`): None (not supported yet)
+          coverage: NOT IMPLEMENTED
 
         Returns:
           (`FloatTensor`, `FloatTensor`):
@@ -187,68 +164,56 @@ class GlobalAttention(nn.Module):
           * Attention distribtutions for each query
              `[tgt_len x batch x src_len]`
         """
-
-        # one step input
-        one_step = source.dim() == 2
+        one_step = query.dim() == 2
         if one_step:
-            source = source.unsqueeze(1)
+            query = query.unsqueeze(1)
 
-        batch, source_l, dim = memory_bank.size()
-        batch_, target_l, dim_ = source.size()
-        aeq(batch, batch_)
-        aeq(dim, dim_)
+        src_batch, src_len, src_dim = memory_bank.size()
+        tgt_batch, tgt_len, tgt_dim = query.size()
+        aeq(src_batch, tgt_batch)
+        aeq(src_dim, tgt_dim)
+
         if coverage is not None:
-            batch_, source_l_ = coverage.size()
-            aeq(batch, batch_)
-            aeq(source_l, source_l_)
+            cov_batch, cov_len = coverage.size()
+            aeq(src_batch, cov_batch)
+            aeq(src_len, cov_len)
             cover = coverage.view(-1).unsqueeze(1)
             memory_bank += self.linear_cover(cover).view_as(memory_bank)
             memory_bank = torch.tanh(memory_bank)
 
-        # compute attention scores, as in Luong et al.
-        align = self.score(source, memory_bank)
+        align = self.score(query, memory_bank)
 
         if memory_lengths is not None:
             mask = sequence_mask(memory_lengths, max_len=align.size(-1))
             align.masked_fill_(1 - mask.unsqueeze(1), -float('inf'))
 
-        # turning this into a 2d tensor is still necessary because something
-        # is broken with sparsemax and it cannot handle a 3d tensor
-        align = align.view(batch * target_l, source_l)
-        align_vectors = self.attn_func(align)
-        align_vectors = align_vectors.view(batch, target_l, source_l)
+        # it should not be necessary to view align as a 2d tensor, but
+        # something is broken with sparsemax and it cannot handle a 3d tensor
+        align_vectors = self.attn_func(
+            align.view(src_batch * tgt_len, src_len)
+        ).view(src_batch, tgt_len, src_len)
 
         # each context vector c_t is the weighted average over source states
         c = torch.bmm(align_vectors, memory_bank)
 
         # concatenate
-        concat_c = torch.cat([c, source], 2).view(batch * target_l, dim * 2)
-        attn_h = self.output_layer(concat_c).view(batch, target_l, dim)
+        concat_c = torch.cat([c, query], 2)
+        attn_h = self.output_layer(concat_c)
 
-        # figure out what is going on with these checks
+        # how many of these checks are actually necessary?
         if one_step:
             attn_h = attn_h.squeeze(1)
             align_vectors = align_vectors.squeeze(1)
-
-            # Check output sizes
-            batch_, dim_ = attn_h.size()
-            aeq(batch, batch_)
-            aeq(dim, dim_)
-            batch_, source_l_ = align_vectors.size()
-            aeq(batch, batch_)
-            aeq(source_l, source_l_)
-
+            attn_batch, attn_dim = attn_h.size()
+            align_batch, align_len = align_vectors.size()
         else:
             attn_h = attn_h.transpose(0, 1).contiguous()
             align_vectors = align_vectors.transpose(0, 1).contiguous()
-            # Check output sizes
-            target_l_, batch_, dim_ = attn_h.size()
-            aeq(target_l, target_l_)
-            aeq(batch, batch_)
-            aeq(dim, dim_)
-            target_l_, batch_, source_l_ = align_vectors.size()
-            aeq(target_l, target_l_)
-            aeq(batch, batch_)
-            aeq(source_l, source_l_)
+            attn_len, attn_batch, attn_dim = attn_h.size()
+            align_len, align_batch, align_len = align_vectors.size()
+            aeq(tgt_len, attn_len, align_len)
+        aeq(src_len, align_len)
+        aeq(src_batch, attn_batch, align_batch)
+        aeq(src_dim, attn_dim)
 
         return attn_h, align_vectors
