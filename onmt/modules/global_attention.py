@@ -111,43 +111,38 @@ class GlobalAttention(nn.Module):
        attn_type (str): type of attention to use, options [dot,general,mlp]
     """
 
-    def __init__(self, dim, coverage=False, attn_type="dot",
-                 attn_func="softmax"):
+    def __init__(self, dim, attn_type="dot", attn_func="softmax", **kwargs):
         super(GlobalAttention, self).__init__()
 
-        assert not coverage, "Coverage attention is not implemented"
-        assert attn_type in ["dot", "general", "mlp"], (
-            "Please select a valid attention type.")
-        assert attn_func in ["softmax", "sparsemax"], (
-            "Please select a valid attention function.")
-        if attn_func == "softmax":
-            self.attn_func = nn.Softmax(dim=-1)
+        if isinstance(attn_type, nn.Module):
+            self.score = attn_type
         else:
-            self.attn_func = Sparsemax(dim=-1)
+            str2scorer = {
+                "mlp": MLPScorer(dim),
+                "dot": DotScorer(),
+                "general": GeneralScorer(dim)
+            }
+            assert attn_type in str2scorer, "Please select a valid attn type."
+            self.score = str2scorer[attn_type]
 
-        # mlp wants it with bias
-        out_bias = attn_type == "mlp"
+        if isinstance(attn_func, nn.Module):
+            self.attn_func = attn_func
+        else:
+            str2func = {
+                "softmax": nn.Softmax(dim=-1),
+                "sparsemax": Sparsemax(dim=-1)
+            }
+            assert attn_func in str2func, "Please select a valid attn function"
+            self.attn_func = str2func[attn_func]
+
+        out_bias = attn_type == "mlp"  # should be done differently
         linear_out = nn.Linear(dim * 2, dim, bias=out_bias)
-
-        # eventually out_activation should be an argument
-        # (but it's hard-coded for now so as not to mess with the interface
-        # for creating an instance)
         out_activation = nn.Tanh() if attn_type != "mlp" else None
 
         if out_activation is not None:
             self.output_layer = nn.Sequential(linear_out, out_activation)
         else:
             self.output_layer = linear_out
-
-        if attn_type == "mlp":
-            self.score = MLPScorer(dim)
-        elif attn_type == "dot":
-            self.score = DotScorer()
-        else:
-            self.score = GeneralScorer(dim)
-
-        # if coverage:
-        #    self.linear_cover = nn.Linear(1, dim, bias=False)
 
     def forward(self, query, memory_bank, memory_lengths=None, coverage=None):
         """
@@ -189,9 +184,7 @@ class GlobalAttention(nn.Module):
 
         # it should not be necessary to view align as a 2d tensor, but
         # something is broken with sparsemax and it cannot handle a 3d tensor
-        align_vectors = self.attn_func(
-            align.view(src_batch * tgt_len, src_len)
-        ).view(src_batch, tgt_len, src_len)
+        align_vectors = self.attn_func(align.view(-1, src_len)).view_as(align)
 
         # each context vector c_t is the weighted average over source states
         c = torch.bmm(align_vectors, memory_bank)
@@ -200,20 +193,11 @@ class GlobalAttention(nn.Module):
         concat_c = torch.cat([c, query], 2)
         attn_h = self.output_layer(concat_c)
 
-        # how many of these checks are actually necessary?
         if one_step:
             attn_h = attn_h.squeeze(1)
             align_vectors = align_vectors.squeeze(1)
-            attn_batch, attn_dim = attn_h.size()
-            align_batch, align_len = align_vectors.size()
         else:
             attn_h = attn_h.transpose(0, 1).contiguous()
             align_vectors = align_vectors.transpose(0, 1).contiguous()
-            attn_len, attn_batch, attn_dim = attn_h.size()
-            align_len, align_batch, align_len = align_vectors.size()
-            aeq(tgt_len, attn_len, align_len)
-        aeq(src_len, align_len)
-        aeq(src_batch, attn_batch, align_batch)
-        aeq(src_dim, attn_dim)
 
         return attn_h, align_vectors
