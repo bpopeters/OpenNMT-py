@@ -1,6 +1,4 @@
 """ Audio encoder """
-import math
-
 import torch.nn as nn
 
 from torch.nn.utils.rnn import pack_padded_sequence as pack
@@ -30,11 +28,10 @@ class AudioEncoder(EncoderBase):
         super(AudioEncoder, self).__init__()
         self.dec_layers = dec_layers
         num_directions = 2 if brnn else 1
-        self.num_directions = num_directions
         assert enc_rnn_size % num_directions == 0
         enc_rnn_size_real = enc_rnn_size // num_directions
         assert dec_rnn_size % num_directions == 0
-        input_size = int(math.floor((sample_rate * window_size) / 2) + 1)
+        input_size = int(sample_rate * window_size / 2) + 1
         assert len(enc_pooling) == enc_layers or len(enc_pooling) == 1
         if len(enc_pooling) == 1:
             enc_pooling = enc_pooling * enc_layers
@@ -81,10 +78,7 @@ class AudioEncoder(EncoderBase):
         "See :obj:`onmt.encoders.encoder.EncoderBase.forward()`"
 
         batch_size, _, nfft, t = src.size()
-        src = src.transpose(0, 1).transpose(0, 3).contiguous() \
-                 .view(t, batch_size, nfft)
-        orig_lengths = lengths
-        lengths = lengths.view(-1).tolist()
+        src = src.permute(3, 0, 2, 1).contiguous().view(t, batch_size, nfft)
 
         layers = zip(self.rnns, self.pools, self.batchnorms)
         for i, (rnn, pool, batchnorm) in enumerate(layers):
@@ -94,13 +88,13 @@ class AudioEncoder(EncoderBase):
             memory_bank = unpack(memory_bank)[0]
             t = memory_bank.size(0)
             memory_bank = pool(memory_bank.transpose(0, 2)).transpose(0, 2)
-            lengths = [int(math.floor((length - stride) / stride + 1))
-                       for length in lengths]
+            lengths = (lengths - stride) // stride + 1
             src = memory_bank
             t, _, num_feat = src.size()
             src = batchnorm(src.contiguous().view(-1, num_feat))
             src = src.view(t, -1, num_feat)
-            if self.dropout and i + 1 != len(self.rnns):
+
+            if self.dropout is not None and i + 1 != len(self.rnns):
                 src = self.dropout(src)
 
         memory_bank = memory_bank.contiguous().view(-1, memory_bank.size(2))
@@ -113,4 +107,4 @@ class AudioEncoder(EncoderBase):
 
         is_lstm = isinstance(self.rnns[0], nn.LSTM)
         encoder_final = state, state if is_lstm else state
-        return encoder_final, memory_bank, orig_lengths.new_tensor(lengths)
+        return encoder_final, memory_bank, lengths
