@@ -2,6 +2,7 @@
 import glob
 import os
 import codecs
+import math
 
 from collections import Counter, defaultdict
 from itertools import chain, cycle
@@ -187,16 +188,15 @@ def filter_example(ex, use_src_len=True, use_tgt_len=True,
     argument to a dataset, it should be partially evaluated with everything
     specified except the value of the example.
     """
-    return (not use_src_len or min_src_len <= len(ex.src) <= max_src_len) and \
-        (not use_tgt_len or min_tgt_len <= len(ex.tgt) <= max_tgt_len)
+    src_len = len(ex.src[0])
+    tgt_len = len(ex.tgt[0])
+    return (not use_src_len or min_src_len <= src_len <= max_src_len) and \
+        (not use_tgt_len or min_tgt_len <= tgt_len <= max_tgt_len)
 
 
-def build_dataset(fields, data_type, src,
-                  src_dir=None, tgt=None,
-                  src_seq_len=50, tgt_seq_len=50,
-                  sample_rate=0, window_size=0, window_stride=0, window=None,
-                  normalize_audio=True, use_filter_pred=True,
-                  image_channel_size=3):
+def build_dataset(fields, data_type, src, src_reader,
+                  src_dir=None, tgt=None, tgt_reader=None,
+                  src_seq_len=50, tgt_seq_len=50, use_filter_pred=True):
     """
     src: path to corpus file or iterator over source data
     tgt: path to corpus file, iterator over target data, or None
@@ -206,28 +206,10 @@ def build_dataset(fields, data_type, src,
     }
     assert data_type in dataset_classes
     assert src is not None
-    if data_type == 'text':
-        src_examples_iter = TextDataset.make_examples(src, "src")
-    elif data_type == 'img':
-        # there is a truncate argument as well, but it was never set to
-        # anything besides None before
-        src_examples_iter = ImageDataset.make_examples(
-            src, src_dir, 'src', channel_size=image_channel_size
-        )
-    else:
-        src_examples_iter = AudioDataset.make_examples(
-            src, src_dir, "src", sample_rate,
-            window_size, window_stride, window,
-            normalize_audio, None)
-
-    if tgt is None:
-        tgt_examples_iter = None
-    else:
-        tgt_examples_iter = TextDataset.make_examples(tgt, "tgt")
 
     # the second conjunct means nothing will be filtered at translation time
     # if there is no target data
-    if use_filter_pred and tgt_examples_iter is not None:
+    if use_filter_pred and tgt is not None:
         filter_pred = partial(
             filter_example, use_src_len=data_type == 'text',
             max_src_len=src_seq_len, max_tgt_len=tgt_seq_len
@@ -235,19 +217,34 @@ def build_dataset(fields, data_type, src,
     else:
         filter_pred = None
 
-    dataset_cls = dataset_classes[data_type]
-    dataset = dataset_cls(
-        fields, src_examples_iter, tgt_examples_iter, filter_pred=filter_pred)
-    return dataset
+    return dataset_classes[data_type](
+        fields,
+        readers=[src_reader, tgt_reader] if tgt else [src_reader],
+        data=[("src", src), ("tgt", tgt)] if tgt else [("src", src)],
+        dirs=[src_dir, None] if tgt else [src_dir],
+        filter_pred=filter_pred)
 
 
-def _build_field_vocab(field, counter, **kwargs):
+def _pad_vocab_to_multiple(vocab, multiple):
+    vocab_size = len(vocab)
+    if vocab_size % multiple == 0:
+        return
+    target_size = int(math.ceil(vocab_size / multiple)) * multiple
+    padding_tokens = [
+        "averyunlikelytoken%d" % i for i in range(target_size - vocab_size)]
+    vocab.extend(Vocab(Counter(), specials=padding_tokens))
+    return vocab
+
+
+def _build_field_vocab(field, counter, size_multiple=1, **kwargs):
     # this is basically copy-pasted from torchtext.
     all_specials = [
         field.unk_token, field.pad_token, field.init_token, field.eos_token
     ]
     specials = [tok for tok in all_specials if tok is not None]
     field.vocab = field.vocab_cls(counter, specials=specials, **kwargs)
+    if size_multiple > 1:
+        _pad_vocab_to_multiple(field.vocab, size_multiple)
 
 
 def _load_vocab(vocab_path, name, counters):
@@ -262,15 +259,21 @@ def _load_vocab(vocab_path, name, counters):
     return vocab, vocab_size
 
 
-def _build_fv_from_multifield(multifield, counters, build_fv_args):
+def _build_fv_from_multifield(multifield, counters, build_fv_args,
+                              size_multiple=1):
     for name, field in multifield:
-        _build_field_vocab(field, counters[name], **build_fv_args[name])
+        _build_field_vocab(
+            field,
+            counters[name],
+            size_multiple=size_multiple,
+            **build_fv_args[name])
         logger.info(" * %s vocab size: %d." % (name, len(field.vocab)))
 
 
 def build_vocab(train_dataset_files, fields, data_type, share_vocab,
                 src_vocab_path, src_vocab_size, src_words_min_frequency,
-                tgt_vocab_path, tgt_vocab_size, tgt_words_min_frequency):
+                tgt_vocab_path, tgt_vocab_size, tgt_words_min_frequency,
+                vocab_size_multiple=1):
     """
     Args:
         train_dataset_files: a list of train dataset pt file.
@@ -285,6 +288,8 @@ def build_vocab(train_dataset_files, fields, data_type, share_vocab,
         tgt_vocab_size(int): size of the target vocabulary.
         tgt_words_min_frequency(int): the minimum frequency needed to
                 include a target word in the vocabulary.
+        vocab_size_multiple(int): ensure that the vocabulary size is a multiple
+                of this value.
 
     Returns:
         Dict of Fields
@@ -340,11 +345,19 @@ def build_vocab(train_dataset_files, fields, data_type, share_vocab,
         max_size=tgt_vocab_size, min_freq=tgt_words_min_frequency)
     assert len(fields["tgt"]) == 1
     tgt_multifield = fields["tgt"][0][1]
-    _build_fv_from_multifield(tgt_multifield, counters, build_fv_args)
+    _build_fv_from_multifield(
+        tgt_multifield,
+        counters,
+        build_fv_args,
+        size_multiple=vocab_size_multiple if not share_vocab else 1)
     if data_type == 'text':
         assert len(fields["src"]) == 1
         src_multifield = fields["src"][0][1]
-        _build_fv_from_multifield(src_multifield, counters, build_fv_args)
+        _build_fv_from_multifield(
+            src_multifield,
+            counters,
+            build_fv_args,
+            size_multiple=vocab_size_multiple if not share_vocab else 1)
         if share_vocab:
             # `tgt_vocab_size` is ignored when sharing vocabularies
             logger.info(" * merging src and tgt vocab...")
@@ -352,12 +365,14 @@ def build_vocab(train_dataset_files, fields, data_type, share_vocab,
             tgt_field = tgt_multifield.base_field
             _merge_field_vocabs(
                 src_field, tgt_field, vocab_size=src_vocab_size,
-                min_freq=src_words_min_frequency)
+                min_freq=src_words_min_frequency,
+                vocab_size_multiple=vocab_size_multiple)
             logger.info(" * merged vocab size: %d." % len(src_field.vocab))
     return fields  # is the return necessary?
 
 
-def _merge_field_vocabs(src_field, tgt_field, vocab_size, min_freq):
+def _merge_field_vocabs(src_field, tgt_field, vocab_size, min_freq,
+                        vocab_size_multiple):
     # in the long run, shouldn't it be possible to do this by calling
     # build_vocab with both the src and tgt data?
     specials = [tgt_field.unk_token, tgt_field.pad_token,
@@ -369,6 +384,8 @@ def _merge_field_vocabs(src_field, tgt_field, vocab_size, min_freq):
         merged, specials=specials,
         max_size=vocab_size, min_freq=min_freq
     )
+    if vocab_size_multiple > 1:
+        _pad_vocab_to_multiple(merged_vocab, vocab_size_multiple)
     src_field.vocab = merged_vocab
     tgt_field.vocab = merged_vocab
     assert len(src_field.vocab) == len(tgt_field.vocab)
@@ -484,7 +501,10 @@ def build_dataset_iter(corpus_type, fields, opt, is_train=True):
     to iterate over. We implement simple ordered iterator strategy here,
     but more sophisticated strategy like curriculum learning is ok too.
     """
-    dataset_paths = sorted(glob.glob(opt.data + '.' + corpus_type + '*.pt'))
+    dataset_paths = list(sorted(
+        glob.glob(opt.data + '.' + corpus_type + '*.pt')))
+    if not dataset_paths:
+        return None
     batch_size = opt.batch_size if is_train else opt.valid_batch_size
     batch_fn = max_tok_len if is_train and opt.batch_type == "tokens" else None
 
