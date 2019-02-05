@@ -33,13 +33,14 @@ class RNNEncoder(EncoderBase):
         hidden_size = hidden_size // num_directions
         self.embeddings = embeddings
 
-        self.rnn, self.no_pack_padded_seq = \
+        self.rnn = \
             rnn_factory(rnn_type,
                         input_size=embeddings.embedding_size,
                         hidden_size=hidden_size,
                         num_layers=num_layers,
                         dropout=dropout,
                         bidirectional=bidirectional)
+        self.no_pack_padded_seq = rnn_type == 'SRU'
 
         # Initialize the bridge layer
         self.use_bridge = use_bridge

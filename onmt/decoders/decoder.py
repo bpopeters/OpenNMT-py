@@ -272,8 +272,7 @@ class StdRNNDecoder(RNNDecoderBase):
         return dec_state, dec_outs, attns
 
     def _build_rnn(self, rnn_type, **kwargs):
-        rnn, _ = rnn_factory(rnn_type, **kwargs)
-        return rnn
+        return rnn_factory(rnn_type, **kwargs)
 
     @property
     def _input_size(self):

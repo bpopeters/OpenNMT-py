@@ -48,7 +48,16 @@ class AudioEncoder(EncoderBase):
 
         self.dropout = nn.Dropout(dropout) if dropout > 0 else None
 
-        self.rnns = nn.ModuleList()
+        input_sizes = [input_size] + [enc_rnn_size] * (enc_layers - 1)
+        self.rnns = nn.ModuleList(
+            [rnn_factory(rnn_type,
+                         input_size=input_size,
+                         hidden_size=enc_rnn_size_real,
+                         num_layers=1,
+                         dropout=dropout,
+                         bidirectional=brnn)
+             for input_size in input_sizes]
+        )
         self.pools = nn.ModuleList(
             [nn.MaxPool1d(enc_pool) for enc_pool in enc_pooling]
         )
@@ -58,24 +67,6 @@ class AudioEncoder(EncoderBase):
         )
 
         self.W = nn.Linear(enc_rnn_size, dec_rnn_size, bias=False)
-        rnn_0, self.no_pack_padded_seq = \
-            rnn_factory(rnn_type,
-                        input_size=input_size,
-                        hidden_size=enc_rnn_size_real,
-                        num_layers=1,
-                        dropout=dropout,
-                        bidirectional=brnn)
-        self.rnns.append(rnn_0)
-
-        for l in range(1, enc_layers):
-            rnn, _ = \
-                rnn_factory(rnn_type,
-                            input_size=enc_rnn_size,
-                            hidden_size=enc_rnn_size_real,
-                            num_layers=1,
-                            dropout=dropout,
-                            bidirectional=brnn)
-            self.rnns.append(rnn)
 
     @classmethod
     def from_opt(cls, opt, embeddings=None):

@@ -8,5 +8,4 @@ def rnn_factory(rnn_type, **kwargs):
         rnn = onmt.models.sru.SRU(**kwargs)
     else:
         rnn = getattr(nn, rnn_type)(**kwargs)
-    # SRU doesn't support PackedSequence.
-    return rnn, rnn_type == "SRU"
+    return rnn
