@@ -28,7 +28,6 @@ class AudioEncoder(EncoderBase):
                  enc_rnn_size, dec_rnn_size, enc_pooling, dropout,
                  sample_rate, window_size):
         super(AudioEncoder, self).__init__()
-        self.enc_layers = enc_layers
         self.rnn_type = rnn_type
         self.dec_layers = dec_layers
         num_directions = 2 if brnn else 1
@@ -48,22 +47,28 @@ class AudioEncoder(EncoderBase):
         enc_pooling = [int(p) for p in enc_pooling]
         self.enc_pooling = enc_pooling
 
-        if dropout > 0:
-            self.dropout = nn.Dropout(dropout)
-        else:
-            self.dropout = None
+        self.dropout = nn.Dropout(dropout) if dropout > 0 else None
+
+        self.rnns = nn.ModuleList()
+        self.pools = nn.ModuleList(
+            [nn.MaxPool1d(enc_pool) for enc_pool in enc_pooling]
+        )
+        self.batchnorms = nn.ModuleList(
+            [nn.BatchNorm1d(enc_rnn_size, affine=True)
+             for i in range(enc_layers)]
+        )
+
         self.W = nn.Linear(enc_rnn_size, dec_rnn_size, bias=False)
-        self.batchnorm_0 = nn.BatchNorm1d(enc_rnn_size, affine=True)
-        self.rnn_0, self.no_pack_padded_seq = \
+        rnn_0, self.no_pack_padded_seq = \
             rnn_factory(rnn_type,
                         input_size=input_size,
                         hidden_size=enc_rnn_size_real,
                         num_layers=1,
                         dropout=dropout,
                         bidirectional=brnn)
-        self.pool_0 = nn.MaxPool1d(enc_pooling[0])
-        for l in range(enc_layers - 1):
-            batchnorm = nn.BatchNorm1d(enc_rnn_size, affine=True)
+        self.rnns.append(rnn_0)
+
+        for l in range(1, enc_layers):
             rnn, _ = \
                 rnn_factory(rnn_type,
                             input_size=enc_rnn_size,
@@ -71,10 +76,7 @@ class AudioEncoder(EncoderBase):
                             num_layers=1,
                             dropout=dropout,
                             bidirectional=brnn)
-            setattr(self, 'rnn_%d' % (l + 1), rnn)
-            setattr(self, 'pool_%d' % (l + 1),
-                    nn.MaxPool1d(enc_pooling[l + 1]))
-            setattr(self, 'batchnorm_%d' % (l + 1), batchnorm)
+            self.rnns.append(rnn)
 
     @classmethod
     def from_opt(cls, opt, embeddings=None):
@@ -101,25 +103,21 @@ class AudioEncoder(EncoderBase):
         orig_lengths = lengths
         lengths = lengths.view(-1).tolist()
 
-        for l in range(self.enc_layers):
-            rnn = getattr(self, 'rnn_%d' % l)
-            pool = getattr(self, 'pool_%d' % l)
-            batchnorm = getattr(self, 'batchnorm_%d' % l)
-            stride = self.enc_pooling[l]
+        layers = zip(self.rnns, self.pools, self.batchnorms)
+        for i, (rnn, pool, batchnorm) in enumerate(layers):
+            stride = self.enc_pooling[i]  # shouldn't be necessary
             packed_emb = pack(src, lengths)
-            memory_bank, tmp = rnn(packed_emb)
+            memory_bank, _ = rnn(packed_emb)
             memory_bank = unpack(memory_bank)[0]
-            t, _, _ = memory_bank.size()
-            memory_bank = memory_bank.transpose(0, 2)
-            memory_bank = pool(memory_bank)
-            lengths = [int(math.floor((length - stride)/stride + 1))
+            t = memory_bank.size(0)
+            memory_bank = pool(memory_bank.transpose(0, 2)).transpose(0, 2)
+            lengths = [int(math.floor((length - stride) / stride + 1))
                        for length in lengths]
-            memory_bank = memory_bank.transpose(0, 2)
             src = memory_bank
             t, _, num_feat = src.size()
             src = batchnorm(src.contiguous().view(-1, num_feat))
             src = src.view(t, -1, num_feat)
-            if self.dropout and l + 1 != self.enc_layers:
+            if self.dropout and i + 1 != len(self.rnns):
                 src = self.dropout(src)
 
         memory_bank = memory_bank.contiguous().view(-1, memory_bank.size(2))
@@ -128,9 +126,6 @@ class AudioEncoder(EncoderBase):
 
         state = memory_bank.new_full((self.dec_layers * self.num_directions,
                                       batch_size, self.dec_rnn_size_real), 0)
-        if self.rnn_type == 'LSTM':
-            # The encoder hidden is  (layers*directions) x batch x dim.
-            encoder_final = (state, state)
-        else:
-            encoder_final = state
+
+        encoder_final = state, state if self.rnn_type == 'LSTM' else state
         return encoder_final, memory_bank, orig_lengths.new_tensor(lengths)
