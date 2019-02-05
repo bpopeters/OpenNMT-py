@@ -34,7 +34,6 @@ class AudioEncoder(EncoderBase):
         assert enc_rnn_size % num_directions == 0
         enc_rnn_size_real = enc_rnn_size // num_directions
         assert dec_rnn_size % num_directions == 0
-        self.dec_rnn_size_real = dec_rnn_size // num_directions
         input_size = int(math.floor((sample_rate * window_size) / 2) + 1)
         assert len(enc_pooling) == enc_layers or len(enc_pooling) == 1
         if len(enc_pooling) == 1:
@@ -105,11 +104,12 @@ class AudioEncoder(EncoderBase):
                 src = self.dropout(src)
 
         memory_bank = memory_bank.contiguous().view(-1, memory_bank.size(2))
-        memory_bank = self.W(memory_bank).view(-1, batch_size,
-                                               self.W.out_features)
+        dec_size = self.W.out_features
+        memory_bank = self.W(memory_bank).view(-1, batch_size, dec_size)
 
-        state = memory_bank.new_full((self.dec_layers * self.num_directions,
-                                      batch_size, self.dec_rnn_size_real), 0)
+        n_directions = 2 if self.rnns[0].bidirectional else 1
+        state = memory_bank.new_full((self.dec_layers * n_directions,
+                                      batch_size, dec_size // n_directions), 0)
 
         is_lstm = isinstance(self.rnns[0], nn.LSTM)
         encoder_final = state, state if is_lstm else state
