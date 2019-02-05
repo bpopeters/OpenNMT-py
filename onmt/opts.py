@@ -95,7 +95,7 @@ def model_opts(parser):
                        Must be equal to enc_rnn_size except for
                        speech-to-text.""")
     group.add('--audio_enc_pooling', '-audio_enc_pooling',
-              type=str, default='1',
+              type=int, nargs='+', default=[1],
               help="""The amount of pooling of audio encoder,
                        either the same amount of pooling across all layers
                        indicated by a single number, or different amounts of
