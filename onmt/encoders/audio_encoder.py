@@ -45,7 +45,6 @@ class AudioEncoder(EncoderBase):
         if len(enc_pooling) == 1:
             enc_pooling = enc_pooling * enc_layers
         enc_pooling = [int(p) for p in enc_pooling]
-        self.enc_pooling = enc_pooling
 
         self.dropout = nn.Dropout(dropout) if dropout > 0 else None
 
@@ -105,7 +104,7 @@ class AudioEncoder(EncoderBase):
 
         layers = zip(self.rnns, self.pools, self.batchnorms)
         for i, (rnn, pool, batchnorm) in enumerate(layers):
-            stride = self.enc_pooling[i]  # shouldn't be necessary
+            stride = pool.kernel_size
             packed_emb = pack(src, lengths)
             memory_bank, _ = rnn(packed_emb)
             memory_bank = unpack(memory_bank)[0]
